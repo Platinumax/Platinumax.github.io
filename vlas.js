@@ -301,6 +301,7 @@
                                     copy[field] = candidate[field];
                                 }
                                 copy.cub_hundred_rating = 0;
+                                copy.cub_hundred_fire = 0;
                                 copy.vote_average = Math.round(reaction.score * 10) / 10;
                                 copy.vote_count = reaction.total;
                                 copy.vlas_score = reaction.score;
