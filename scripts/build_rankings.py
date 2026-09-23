@@ -6,7 +6,6 @@ The daily Trakt archive supports a real rolling 180-day activity ranking after
 """
 import datetime as dt
 import json
-import math
 import os
 from pathlib import Path
 import urllib.request
@@ -59,8 +58,6 @@ def movie_details(tmdb_id):
         "release_date": movie.get("release_date"),
         "poster_path": movie.get("poster_path"),
         "backdrop_path": movie.get("backdrop_path"),
-        "vote_average": movie.get("vote_average"),
-        "vote_count": movie.get("vote_count"),
         "genre_ids": [g["id"] for g in movie.get("genres", [])],
         "adult": movie.get("adult", False),
         "original_language": movie.get("original_language"),
@@ -74,9 +71,9 @@ def valid(movie):
         return False
     if len(date) != 10 or date > TODAY.isoformat():
         return False
-    if any(x in movie["genre_ids"] for x in (16, 99, 10770)):
+    if any(x in movie["genre_ids"] for x in (16, 27, 99, 10770)):
         return False
-    return movie.get("vote_average", 0) >= 5.5 and movie.get("vote_count", 0) >= 30
+    return True
 
 
 def roll_halfyear(history):
@@ -111,26 +108,21 @@ def main():
 
     rows = {}
     for period, movies in raw.items():
-        max_watchers = max((count for _, count in movies), default=1)
         row = []
         for rank, (tmdb_id, watchers) in enumerate(movies):
             item = details[tmdb_id]
             if not valid(item):
                 continue
-            votes, rating = item["vote_count"], item["vote_average"]
-            quality = (votes * rating + 650 * 6.5) / (votes + 650)
-            popularity = 0.7 * (1 - rank / max(len(movies), 1)) + \
-                0.3 * math.log1p(watchers) / math.log1p(max_watchers)
-            score = 8 * popularity + 0.2 * quality
             card = dict(item)
-            card["vlas_score"] = round(score, 2)
+            card["trakt_watchers"] = watchers
             row.append(card)
-        rows[period] = sorted(row, key=lambda card: -card["vlas_score"])
+        rows[period] = row
 
     now = dt.datetime.now(dt.timezone.utc)
     result = {"version": 1, "generated_at": now.isoformat(),
               "generated_at_epoch": int(now.timestamp()),
-              "sources": ["Trakt", "TMDB"], "rows": rows}
+              "sources": ["Trakt popularity", "TMDB metadata", "CUB reactions in Lampa"],
+              "rows": rows}
     HISTORY.write_text(json.dumps(history, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     FEED.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     print("Built rows:", {name: len(items) for name, items in rows.items()})
