@@ -1,6 +1,8 @@
 name: Refresh movie rankings
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '15 5 * * *'
   workflow_dispatch:
@@ -13,18 +15,19 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    if: ${{ vars.RANKINGS_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Build rankings from Trakt and TMDB
+        if: ${{ vars.RANKINGS_ENABLED == 'true' }}
         env:
           TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
           TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
         run: python scripts/build_rankings.py
       - name: Publish updated data
+        if: ${{ vars.RANKINGS_ENABLED == 'true' }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -37,7 +40,7 @@ jobs:
         run: |
           mkdir -p _site/data
           cp index.html vlas.js _site/
-          cp data/rankings.json _site/data/
+          if [ -f data/rankings.json ]; then cp data/rankings.json _site/data/; fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
