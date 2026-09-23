@@ -1,6 +1,6 @@
-/* My Lampa Home 2.0 — selected films for the standard TMDB source.
- * ES5 syntax for older webOS browsers. No API key and no extra server.
- * The visible card rating remains the TMDB rating.
+/* My Lampa Home 3.0 — popular movies and curated collections.
+ * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
+ * The visible card rating remains the TMDB rating; Vlas score sorts the cards.
  */
 (function () {
     'use strict';
@@ -9,6 +9,48 @@
 
     var KEY = 'my_lampa_home_';
     var COMMON = '&without_genres=16,99,10770&with_runtime.gte=75&include_adult=false';
+    var FEED = 'https://platinumax.github.io/data/rankings.json';
+    var feedState = 0;
+    var feedData = null;
+    var feedWaiters = [];
+
+    function loadFeed(callback) {
+        var request, timer, finished = false;
+        if (feedState === 2) { callback(feedData); return; }
+        feedWaiters.push(callback);
+        if (feedState === 1) return;
+        feedState = 1;
+        function done(data) {
+            var waiters, i;
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            feedData = data;
+            feedState = 2;
+            waiters = feedWaiters;
+            feedWaiters = [];
+            for (i = 0; i < waiters.length; i++) waiters[i](feedData);
+        }
+        timer = setTimeout(function () { done(null); }, 6500);
+        try {
+            request = new XMLHttpRequest();
+            request.open('GET', FEED + '?day=' + formatDate(new Date()), true);
+            request.onreadystatechange = function () {
+                var data, age;
+                if (request.readyState !== 4 || finished) return;
+                if (request.status !== 200) { done(null); return; }
+                try {
+                    data = JSON.parse(request.responseText);
+                    age = new Date().getTime() - Number(data.generated_at_epoch) * 1000;
+                    if (data.version !== 1 || !data.rows || !isFinite(age) ||
+                        age < -3600000 || age > 72 * 3600000) data = null;
+                } catch (ignore) { data = null; }
+                done(data);
+            };
+            request.onerror = function () { done(null); };
+            request.send(null);
+        } catch (ignore) { done(null); }
+    }
 
     function formatDate(date) {
         var month = date.getMonth() + 1;
@@ -19,6 +61,21 @@
 
     // The server query produces candidates; validate() checks every card again.
     var COLLECTIONS = [
+        { id: 'week', title: 'Самые популярные за неделю',
+          fallbackTitle: 'В тренде TMDB на этой неделе', feed: 'weekly',
+          minRating: 5.5, minVotes: 30, query: 'trending/movie/week' },
+        { id: 'month', title: 'Самые популярные за месяц',
+          fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
+          minRating: 5.5, minVotes: 30, releaseDays: 30,
+          query: 'sort_by=popularity.desc' },
+        { id: 'halfyear', title: 'Самые популярные за полгода',
+          fallbackTitle: 'Сейчас популярны: релизы за полгода', feed: 'halfyear',
+          minRating: 5.5, minVotes: 60, releaseDays: 180,
+          query: 'sort_by=popularity.desc' },
+        { id: 'year', title: 'Самые популярные за год',
+          fallbackTitle: 'Сейчас популярны: релизы за год', feed: 'yearly',
+          minRating: 5.5, minVotes: 80, releaseDays: 365,
+          query: 'sort_by=popularity.desc' },
         { id: 'fresh', title: 'Новые фильмы, которые оценили зрители',
           minRating: 7.1, minVotes: 700, fromYears: 3, ageDays: 30,
           query: 'sort_by=popularity.desc&vote_average.gte=7.1&vote_count.gte=700' },
@@ -71,6 +128,11 @@
         if (config.fromYear && Number(date.substr(0, 4)) < config.fromYear) return false;
         if (config.beforeYear && Number(date.substr(0, 4)) >= config.beforeYear) return false;
         if (config.fromYears && Number(date.substr(0, 4)) < year - config.fromYears) return false;
+        if (config.releaseDays) {
+            var first = new Date();
+            first.setDate(first.getDate() - config.releaseDays);
+            if (date < formatDate(first)) return false;
+        }
         if (config.beforeYears && Number(date.substr(0, 4)) > year - config.beforeYears) return false;
         if (config.genre && !hasGenre(card, config.genre)) return false;
         if (config.genres) {
@@ -94,6 +156,12 @@
         var upper = cutoff;
         var boundary;
         var url = 'discover/movie?' + config.query;
+        if (config.id === 'week') return config.query;
+        if (config.releaseDays) {
+            boundary = new Date();
+            boundary.setDate(boundary.getDate() - config.releaseDays);
+            url += '&primary_release_date.gte=' + formatDate(boundary);
+        }
         if (config.fromYears) url += '&primary_release_date.gte=' + (year - config.fromYears) + '-01-01';
         if (config.fromYear) url += '&primary_release_date.gte=' + config.fromYear + '-01-01';
         if (config.beforeYears) {
@@ -116,7 +184,7 @@
             minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
             var cutoff = formatDate(minimumAge);
 
-            function finish(data) {
+            function finish(data, fromFeed) {
                 var input, results, local, card, id, i;
                 if (finished) return;
                 finished = true;
@@ -127,35 +195,45 @@
                 local = {};
                 for (i = 0; i < input.length; i++) {
                     card = input[i];
-                    if (!valid(card, config, cutoff, now.getFullYear())) continue;
+                    // Feed rows describe when viewers watched a film, regardless of release year.
+                    if (!valid(card, fromFeed ? {
+                        minRating: config.minRating, minVotes: config.minVotes
+                    } : config, cutoff, now.getFullYear())) continue;
                     id = String(card.id);
-                    if (local[id] || used[id]) continue;
+                    if (local[id] || (!config.feed && used[id])) continue;
                     local[id] = true;
                     results.push(card);
                 }
-                results.sort(function (a, b) {
+                if (fromFeed) results.sort(function (a, b) {
+                    return Number(b.vlas_score) - Number(a.vlas_score);
+                });
+                else if (!config.feed) results.sort(function (a, b) {
                     return quality(b) - quality(a) || Number(b.vote_count) - Number(a.vote_count);
                 });
                 if (results.length > 18) results.length = 18;
                 for (i = 0; i < results.length; i++) used[String(results[i].id)] = true;
                 data.results = results;
-                data.title = config.title;
-                data.name = config.title;
+                data.title = fromFeed ? config.title : (config.fallbackTitle || config.title);
+                data.name = data.title;
                 data.source = 'tmdb';
                 ready(data);
             }
 
             // A stalled network request must never block the whole home screen.
             timer = setTimeout(function () { finish({ results: [] }); }, 12000);
-            try {
-                source.get(requestUrl(config, cutoff, now.getFullYear()), params, function (data) {
-                    finish(data);
-                }, function () {
-                    finish({ results: [] });
-                });
-            } catch (ignore) {
-                finish({ results: [] });
+            function fallback() {
+                try {
+                    source.get(requestUrl(config, cutoff, now.getFullYear()), params, function (data) {
+                        finish(data, false);
+                    }, function () { finish({ results: [] }, false); });
+                } catch (ignore) { finish({ results: [] }, false); }
             }
+            if (config.feed) loadFeed(function (feed) {
+                var cards = feed && feed.rows[config.feed];
+                if (cards && cards.length) finish({ results: cards }, true);
+                else fallback();
+            });
+            else fallback();
         };
     }
 
