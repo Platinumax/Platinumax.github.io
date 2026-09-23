@@ -1,6 +1,6 @@
-/* My Lampa Home 3.0 — popular movies and curated collections.
+/* Vlas Home 4.0 — popularity with CUB audience reaction checks.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
- * The visible card rating remains the TMDB rating; Vlas score sorts the cards.
+ * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
 (function () {
     'use strict';
@@ -8,11 +8,87 @@
     if (window.my_lampa_home_loaded) return;
 
     var KEY = 'my_lampa_home_';
-    var COMMON = '&without_genres=16,99,10770&with_runtime.gte=75&include_adult=false';
+    var COMMON = '&without_genres=16,27,99,10770&with_runtime.gte=75&include_adult=false';
     var FEED = 'https://platinumax.github.io/data/rankings.json';
     var feedState = 0;
     var feedData = null;
     var feedWaiters = [];
+    var reactionCache = {};
+    var reactionQueue = [];
+    var reactionActive = 0;
+
+    function reactionFor(id, callback) {
+        var key = String(id), cached = reactionCache[key];
+        if (cached) {
+            if (cached.done) callback(cached.value);
+            else cached.waiters.push(callback);
+            return;
+        }
+        reactionCache[key] = { done: false, waiters: [callback], value: null };
+        reactionQueue.push(key);
+        drainReactions();
+    }
+
+    function drainReactions() {
+        var key, entry;
+        while (reactionActive < 5 && reactionQueue.length) {
+            key = reactionQueue.shift();
+            entry = reactionCache[key];
+            reactionActive++;
+            // Keep each request's callbacks and timeout independent of the queue loop.
+            (function (movieId, item) {
+                var done = false, source;
+                var timeout = setTimeout(function () { complete(null); }, 5500);
+                function complete(value) {
+                    var waiters, i;
+                    if (done) return;
+                    done = true;
+                    clearTimeout(timeout);
+                    item.value = value;
+                    item.done = true;
+                    waiters = item.waiters;
+                    item.waiters = [];
+                    reactionActive--;
+                    for (i = 0; i < waiters.length; i++) waiters[i](value);
+                    drainReactions();
+                }
+                try {
+                    source = Lampa.Api.sources.cub;
+                    if (!source || typeof source.reactionsGet !== 'function') {
+                        complete(null);
+                    } else {
+                        source.reactionsGet({ method: 'movie', id: movieId }, function (data) {
+                            complete(readReactions(data));
+                        });
+                    }
+                } catch (ignore) { complete(null); }
+            })(key, entry);
+        }
+    }
+
+    function readReactions(data) {
+        var counts = { fire: 0, nice: 0, think: 0, bore: 0, shit: 0 };
+        var rows = data && data.result;
+        var i, type, count, total, positive, negative, score;
+        if (!rows || !rows.length) return null;
+        for (i = 0; i < rows.length; i++) {
+            type = rows[i] && rows[i].type;
+            count = Number(rows[i] && rows[i].counter);
+            if (Object.prototype.hasOwnProperty.call(counts, type) &&
+                isFinite(count) && count >= 0) counts[type] += count;
+        }
+        total = counts.fire + counts.nice + counts.think + counts.bore + counts.shit;
+        if (total < 15) return null;
+        positive = counts.fire + counts.nice;
+        negative = counts.bore + counts.shit;
+        // A strong negative signal vetoes a movie regardless of its popularity.
+        if (total >= 30 && (negative / total >= 0.38 ||
+            (counts.shit >= 20 && counts.shit / total >= 0.2))) return null;
+        score = (10 * counts.fire + 8 * counts.nice + 5 * counts.think +
+            2 * counts.bore + 20 * 5) / (total + 20);
+        if (score < 5.6 || positive <= negative) return null;
+        return { score: score, total: total };
+    }
 
     function loadFeed(callback) {
         var request, timer, finished = false;
@@ -59,44 +135,44 @@
             '-' + (day < 10 ? '0' : '') + day;
     }
 
-    // The server query produces candidates; validate() checks every card again.
+    // TMDB queries supply candidates; reactions determine whether they qualify.
     var COLLECTIONS = [
         { id: 'week', title: 'Самые популярные за неделю',
           fallbackTitle: 'В тренде TMDB на этой неделе', feed: 'weekly',
-          minRating: 5.5, minVotes: 30, query: 'trending/movie/week' },
+          query: 'trending/movie/week' },
         { id: 'month', title: 'Самые популярные за месяц',
           fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
-          minRating: 5.5, minVotes: 30, releaseDays: 30,
+          releaseDays: 30,
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы за полгода', feed: 'halfyear',
-          minRating: 5.5, minVotes: 60, releaseDays: 180,
+          releaseDays: 180,
           query: 'sort_by=popularity.desc' },
         { id: 'year', title: 'Самые популярные за год',
           fallbackTitle: 'Сейчас популярны: релизы за год', feed: 'yearly',
-          minRating: 5.5, minVotes: 80, releaseDays: 365,
+          releaseDays: 365,
           query: 'sort_by=popularity.desc' },
         { id: 'fresh', title: 'Новые фильмы, которые оценили зрители',
-          minRating: 7.1, minVotes: 700, fromYears: 3, ageDays: 30,
-          query: 'sort_by=popularity.desc&vote_average.gte=7.1&vote_count.gte=700' },
+          fromYears: 3, ageDays: 30,
+          query: 'sort_by=popularity.desc' },
         { id: 'best', title: 'Лучшие фильмы последних лет',
-          minRating: 7.7, minVotes: 2500, fromYears: 12, beforeYears: 4,
-          query: 'sort_by=vote_average.desc&vote_average.gte=7.7&vote_count.gte=2500' },
+          fromYears: 12, beforeYears: 4,
+          query: 'sort_by=popularity.desc' },
         { id: 'comedy', title: 'Комедии с хорошими отзывами',
-          minRating: 7.1, minVotes: 800, fromYear: 1995, genre: 35,
-          query: 'with_genres=35&sort_by=vote_average.desc&vote_average.gte=7.1&vote_count.gte=800' },
+          fromYear: 1995, genre: 35,
+          query: 'with_genres=35&sort_by=popularity.desc' },
         { id: 'thriller', title: 'Триллеры и детективы с сильными оценками',
-          minRating: 7.3, minVotes: 900, fromYear: 1995, genres: [53, 9648],
-          query: 'with_genres=53|9648&sort_by=vote_average.desc&vote_average.gte=7.3&vote_count.gte=900' },
+          fromYear: 1995, genres: [53, 9648],
+          query: 'with_genres=53|9648&sort_by=popularity.desc' },
         { id: 'scifi', title: 'Фантастика с высоким рейтингом',
-          minRating: 7.3, minVotes: 1000, fromYear: 1995, genre: 878,
-          query: 'with_genres=878&sort_by=vote_average.desc&vote_average.gte=7.3&vote_count.gte=1000' },
+          fromYear: 1995, genre: 878,
+          query: 'with_genres=878&sort_by=popularity.desc' },
         { id: 'gems', title: 'Хорошие фильмы вне главных хитов',
-          minRating: 7.6, minVotes: 400, maxVotes: 2500, fromYear: 2000,
-          query: 'sort_by=vote_average.desc&vote_average.gte=7.6&vote_count.gte=400&vote_count.lte=2500' },
+          fromYear: 2000,
+          query: 'sort_by=popularity.asc' },
         { id: 'classics', title: 'Проверенное кино до 2000 года',
-          minRating: 7.8, minVotes: 1600, beforeYear: 2000,
-          query: 'sort_by=vote_average.desc&vote_average.gte=7.8&vote_count.gte=1600' }
+          beforeYear: 2000,
+          query: 'sort_by=popularity.desc' }
     ];
 
     function enabled(id) {
@@ -115,16 +191,12 @@
     }
 
     function valid(card, config, cutoff, year) {
-        var date, votes, rating, match, i;
+        var date, match, i;
         if (!card || !card.id || !card.poster_path || card.adult === true ||
             (!card.title && !card.name)) return false;
         date = card.release_date;
-        votes = Number(card.vote_count);
-        rating = Number(card.vote_average);
         if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date > cutoff ||
-            !isFinite(votes) || !isFinite(rating) || votes < config.minVotes ||
-            rating < config.minRating || rating > 10) return false;
-        if (config.maxVotes && votes > config.maxVotes) return false;
+            Number(date.substr(0, 4)) < 1900) return false;
         if (config.fromYear && Number(date.substr(0, 4)) < config.fromYear) return false;
         if (config.beforeYear && Number(date.substr(0, 4)) >= config.beforeYear) return false;
         if (config.fromYears && Number(date.substr(0, 4)) < year - config.fromYears) return false;
@@ -142,14 +214,9 @@
             }
             if (!match) return false;
         }
-        if (card.genre_ids && (hasGenre(card, 16) || hasGenre(card, 99) ||
-            hasGenre(card, 10770))) return false;
+        if (!card.genre_ids || hasGenre(card, 27) || hasGenre(card, 16) || hasGenre(card, 99) ||
+            hasGenre(card, 10770)) return false;
         return true;
-    }
-
-    function quality(card) {
-        var votes = Number(card.vote_count);
-        return (votes * Number(card.vote_average) + 650 * 6.5) / (votes + 650);
     }
 
     function requestUrl(config, cutoff, year) {
@@ -184,53 +251,84 @@
             minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
             var cutoff = formatDate(minimumAge);
 
-            function finish(data, fromFeed) {
-                var input, results, local, card, id, i;
+            var results = [];
+            var rowTitle = config.fallbackTitle || config.title;
+            function finish() {
+                var i, data;
                 if (finished) return;
                 finished = true;
                 clearTimeout(timer);
+                if (config.feed) {
+                    results.sort(function (a, b) { return b.vlas_rank - a.vlas_rank; });
+                } else {
+                    results.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
+                }
+                for (i = 0; i < results.length; i++) {
+                    used[String(results[i].id)] = true;
+                    delete results[i].vlas_rank;
+                }
+                data = { results: results, title: rowTitle, name: rowTitle, source: 'tmdb' };
+                ready(data);
+            }
+
+            function check(data, fromFeed) {
+                var input, local, card, id, i, candidates = [], pending;
                 data = data || {};
                 input = data.results || [];
-                results = [];
                 local = {};
                 for (i = 0; i < input.length; i++) {
                     card = input[i];
                     // Feed rows describe when viewers watched a film, regardless of release year.
-                    if (!valid(card, fromFeed ? {
-                        minRating: config.minRating, minVotes: config.minVotes
-                    } : config, cutoff, now.getFullYear())) continue;
+                    if (!valid(card, fromFeed ? {} : config, cutoff, now.getFullYear())) continue;
                     id = String(card.id);
                     if (local[id] || (!config.feed && used[id])) continue;
                     local[id] = true;
-                    results.push(card);
+                    candidates.push(card);
+                    if (candidates.length === 14) break;
                 }
-                if (fromFeed) results.sort(function (a, b) {
-                    return Number(b.vlas_score) - Number(a.vlas_score);
-                });
-                else if (!config.feed) results.sort(function (a, b) {
-                    return quality(b) - quality(a) || Number(b.vote_count) - Number(a.vote_count);
-                });
-                if (results.length > 18) results.length = 18;
-                for (i = 0; i < results.length; i++) used[String(results[i].id)] = true;
-                data.results = results;
-                data.title = fromFeed ? config.title : (config.fallbackTitle || config.title);
-                data.name = data.title;
-                data.source = 'tmdb';
-                ready(data);
+                rowTitle = fromFeed ? config.title : (config.fallbackTitle || config.title);
+                pending = candidates.length;
+                if (!pending) { finish(); return; }
+                for (i = 0; i < candidates.length; i++) {
+                    (function (candidate, position) {
+                        reactionFor(candidate.id, function (reaction) {
+                            var copy, field;
+                            if (finished) return;
+                            if (reaction) {
+                                // Clone: changing the TMDB cache would alter the film detail page.
+                                copy = {};
+                                for (field in candidate) if (Object.prototype.hasOwnProperty.call(candidate, field)) {
+                                    copy[field] = candidate[field];
+                                }
+                                copy.cub_hundred_rating = 0;
+                                copy.vote_average = Math.round(reaction.score * 10) / 10;
+                                copy.vote_count = reaction.total;
+                                copy.vlas_score = reaction.score;
+                                // Source order measures popularity; reactions veto poor titles.
+                                copy.vlas_rank = (1 - position / candidates.length) * 6 +
+                                    reaction.score * 0.4;
+                                results.push(copy);
+                            }
+                            pending--;
+                            if (!pending) finish();
+                        });
+                    })(candidates[i], i);
+                }
             }
 
             // A stalled network request must never block the whole home screen.
-            timer = setTimeout(function () { finish({ results: [] }); }, 12000);
+            timer = setTimeout(finish, 26000);
             function fallback() {
                 try {
                     source.get(requestUrl(config, cutoff, now.getFullYear()), params, function (data) {
-                        finish(data, false);
-                    }, function () { finish({ results: [] }, false); });
-                } catch (ignore) { finish({ results: [] }, false); }
+                        if (!finished) check(data, false);
+                    }, function () { finish(); });
+                } catch (ignore) { finish(); }
             }
             if (config.feed) loadFeed(function (feed) {
                 var cards = feed && feed.rows[config.feed];
-                if (cards && cards.length) finish({ results: cards }, true);
+                if (finished) return;
+                if (cards && cards.length) check({ results: cards }, true);
                 else fallback();
             });
             else fallback();
@@ -282,7 +380,7 @@
                     Lampa.SettingsApi.addParam({
                         component: 'my_lampa_home',
                         param: { name: KEY + row.id, type: 'trigger', default: true },
-                        field: { name: row.title, description: 'Показывать этот ряд на главной' },
+                        field: { name: row.title, description: 'Оценка по реакциям Lampa; ужасы скрыты' },
                         onChange: function (value) {
                             Lampa.Storage.set(KEY + row.id, value);
                         }
