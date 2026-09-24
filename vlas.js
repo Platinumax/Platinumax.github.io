@@ -1,4 +1,4 @@
-/* Vlas Home 4.1 — fuller rows with CUB audience reaction checks.
+/* Vlas Home 5.0 — distinct collections and native full-screen continuation.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -20,7 +20,12 @@
     var savedLoaded = false;
     var saveTimer = null;
     var REACTION_TTL = 6 * 60 * 60 * 1000;
-    var TARGET = 14;
+    var TARGET = 24;
+    var ROW_CANDIDATES = 240;
+    var ROW_PAGES = 12;
+    var FULL_PAGE = 24;
+    var FULL_PAGES = 6;
+    var rowSessions = {};
 
     function loadSaved() {
         if (savedLoaded) return;
@@ -186,12 +191,12 @@
           releaseDays: 30,
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
-          fallbackTitle: 'Сейчас популярны: релизы за полгода', feed: 'halfyear',
-          releaseDays: 180,
+          fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
+          releaseDays: 180, olderThanDays: 30,
           query: 'sort_by=popularity.desc' },
         { id: 'year', title: 'Самые популярные за год',
-          fallbackTitle: 'Сейчас популярны: релизы за год', feed: 'yearly',
-          releaseDays: 365,
+          fallbackTitle: 'Сейчас популярны: релизы 7–12 месяцев назад', feed: 'yearly',
+          releaseDays: 365, olderThanDays: 180,
           query: 'sort_by=popularity.desc' },
         { id: 'fresh', title: 'Новые фильмы, которые оценили зрители',
           currentYear: true, ageDays: 14,
@@ -221,6 +226,18 @@
         catch (ignore) { return true; }
     }
 
+    function hideViewed() {
+        try { return Lampa.Storage.get(KEY + 'hide_viewed', true) !== false; }
+        catch (ignore) { return true; }
+    }
+
+    function watched(card) {
+        try {
+            var mark = Lampa.Favorite && Lampa.Favorite.check(card);
+            return !!(mark && (mark.viewed || mark.thrown));
+        } catch (ignore) { return false; }
+    }
+
     function hasGenre(card, genre) {
         var ids = card.genre_ids;
         var i;
@@ -247,6 +264,11 @@
             first.setDate(first.getDate() - config.releaseDays);
             if (date < formatDate(first)) return false;
         }
+        if (config.olderThanDays) {
+            var latest = new Date();
+            latest.setDate(latest.getDate() - config.olderThanDays);
+            if (date > formatDate(latest)) return false;
+        }
         if (config.beforeYears && Number(date.substr(0, 4)) > year - config.beforeYears) return false;
         if (config.genre && !hasGenre(card, config.genre)) return false;
         if (config.genres) {
@@ -271,6 +293,11 @@
             boundary.setDate(boundary.getDate() - config.releaseDays);
             url += '&primary_release_date.gte=' + formatDate(boundary);
         }
+        if (config.olderThanDays) {
+            boundary = new Date();
+            boundary.setDate(boundary.getDate() - config.olderThanDays);
+            if (formatDate(boundary) < upper) upper = formatDate(boundary);
+        }
         if (config.fromYears) url += '&primary_release_date.gte=' + (year - config.fromYears) + '-01-01';
         if (config.currentYear) url += '&primary_release_date.gte=' + year + '-01-01';
         if (config.fromYear) url += '&primary_release_date.gte=' + config.fromYear + '-01-01';
@@ -285,7 +312,21 @@
         return url + '&primary_release_date.lte=' + upper + COMMON;
     }
 
-    function makeRow(source, config, params, used) {
+    function ratedCard(card, reaction, position) {
+        var copy = {}, field;
+        for (field in card) if (Object.prototype.hasOwnProperty.call(card, field)) {
+            copy[field] = card[field];
+        }
+        copy.cub_hundred_rating = 0;
+        copy.cub_hundred_fire = 0;
+        copy.vote_average = Math.round(reaction.score * 10) / 10;
+        copy.vote_count = reaction.total;
+        copy.vlas_score = reaction.score;
+        copy.vlas_rank = (1 - position / 400) * 6 + reaction.score * 0.4;
+        return copy;
+    }
+
+    function makeRow(source, config, params, used, rowIndex) {
         return function (ready) {
             var finished = false;
             var timer;
@@ -300,10 +341,12 @@
             var page = config.startPage || 1;
             var feedCards = null;
             var feedOffset = 0;
+            var usedFeed = false;
+            var exhausted = false;
             var rowTitle = config.fallbackTitle || config.title;
 
             function finish() {
-                var i, data;
+                var i, data, hasMore;
                 if (finished) return;
                 finished = true;
                 clearTimeout(timer);
@@ -315,12 +358,20 @@
                 } else {
                     results.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
                 }
+                hasMore = results.length > TARGET || !exhausted;
                 if (results.length > TARGET) results.length = TARGET;
                 for (i = 0; i < results.length; i++) {
-                    used[String(results[i].id)] = true;
+                    used[String(results[i].id)] = config.id;
                     delete results[i].vlas_rank;
                 }
-                data = { results: results, title: rowTitle, name: rowTitle, source: 'tmdb' };
+                rowSessions[config.id] = {
+                    cards: results.slice(0), config: config, params: params,
+                    used: used, title: rowTitle, hasMore: hasMore,
+                    usedFeed: usedFeed, rowIndex: rowIndex
+                };
+                data = { results: results, title: rowTitle, name: rowTitle,
+                    source: 'tmdb', url: 'vlas/' + config.id,
+                    total_pages: hasMore ? FULL_PAGES : 1 };
                 ready(data);
             }
 
@@ -331,11 +382,12 @@
                     // Feed rows describe when viewers watched a film, regardless of release year.
                     if (!valid(card, fromFeed ? {} : config, cutoff, now.getFullYear())) continue;
                     id = String(card.id);
-                    if (seen[id]) continue;
+                    if (seen[id] || (rowIndex < 5 && used[id])) continue;
+                    if (hideViewed() && watched(card)) continue;
                     seen[id] = true;
                     candidates.push({ card: card, repeat: !config.feed && !!used[id],
                         position: checked++ });
-                    if (checked >= 75) break;
+                    if (checked >= ROW_CANDIDATES) break;
                 }
                 rowTitle = fromFeed ? config.title : (config.fallbackTitle || config.title);
                 pending = candidates.length;
@@ -343,22 +395,10 @@
                 for (i = 0; i < candidates.length; i++) {
                     (function (candidate) {
                         reactionFor(candidate.card.id, function (reaction) {
-                            var copy, field;
+                            var copy;
                             if (finished) return;
                             if (reaction) {
-                                // Clone: changing the TMDB cache would alter the film detail page.
-                                copy = {};
-                                for (field in candidate.card) if (Object.prototype.hasOwnProperty.call(candidate.card, field)) {
-                                    copy[field] = candidate.card[field];
-                                }
-                                copy.cub_hundred_rating = 0;
-                                copy.cub_hundred_fire = 0;
-                                copy.vote_average = Math.round(reaction.score * 10) / 10;
-                                copy.vote_count = reaction.total;
-                                copy.vlas_score = reaction.score;
-                                // Source order measures popularity; reactions veto poor titles.
-                                copy.vlas_rank = (1 - candidate.position / 75) * 6 +
-                                    reaction.score * 0.4;
+                                copy = ratedCard(candidate.card, reaction, candidate.position);
                                 (candidate.repeat ? repeats : results).push(copy);
                             }
                             pending--;
@@ -374,8 +414,11 @@
             function nextFeed() {
                 var batch;
                 if (finished) return;
-                if (results.length >= TARGET || checked >= 75 ||
-                    feedOffset >= feedCards.length) { finish(); return; }
+                if (results.length >= TARGET || checked >= ROW_CANDIDATES ||
+                    feedOffset >= feedCards.length) {
+                    if (feedOffset >= feedCards.length) exhausted = true;
+                    finish(); return;
+                }
                 batch = feedCards.slice(feedOffset, feedOffset + 20);
                 feedOffset += batch.length;
                 check(batch, true, nextFeed);
@@ -384,8 +427,8 @@
             function nextPage() {
                 var requestParams = {}, field, current;
                 if (finished) return;
-                if (results.length >= TARGET || checked >= 75 ||
-                    page > (config.startPage || 1) + 4) { finish(); return; }
+                if (results.length >= TARGET || checked >= ROW_CANDIDATES ||
+                    page > (config.startPage || 1) + ROW_PAGES - 1) { finish(); return; }
                 current = page++;
                 for (field in params) if (Object.prototype.hasOwnProperty.call(params, field)) {
                     requestParams[field] = params[field];
@@ -394,9 +437,13 @@
                 try {
                     source.get(requestUrl(config, cutoff, now.getFullYear()), requestParams, function (data) {
                         if (finished) return;
-                        if (!data || !data.results || !data.results.length) { finish(); return; }
+                        if (!data || !data.results || !data.results.length) {
+                            exhausted = true; finish(); return;
+                        }
                         check(data.results, false, function () {
-                            if (data.total_pages && current >= Number(data.total_pages)) finish();
+                            if (data.total_pages && current >= Number(data.total_pages)) {
+                                exhausted = true; finish();
+                            }
                             else nextPage();
                         });
                     }, finish);
@@ -409,6 +456,7 @@
                 if (finished) return;
                 if (cards && cards.length) {
                     feedCards = cards;
+                    usedFeed = true;
                     nextFeed();
                 } else nextPage();
             });
@@ -416,13 +464,169 @@
         };
     }
 
+    // The category/full screen asks the selected row for additional pages.
+    // Retain its vetted preview and fill later pages only when the user opens it.
+    function fullSession(source, session) {
+        var cards = session.cards.slice(0);
+        var seen = {};
+        var config = session.config;
+        var now = new Date();
+        var minimumAge = new Date(now.getTime());
+        var page = config.startPage || 1;
+        var feedOffset = 0;
+        var checked = 0;
+        var exhausted = !session.hasMore;
+        var requestId = 0;
+        var busy = false;
+        var waiting = [];
+        var i;
+        minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
+        for (i = 0; i < cards.length; i++) seen[String(cards[i].id)] = true;
+
+        function ensure(wanted, callback) {
+            waiting.push({ wanted: wanted, callback: callback });
+            if (busy) return;
+            start();
+        }
+
+        function start() {
+            var request, timer, done = false;
+            if (!waiting.length) return;
+            request = waiting[0];
+            if (cards.length >= request.wanted || exhausted) {
+                waiting.shift().callback(cards, exhausted);
+                start(); return;
+            }
+            busy = true;
+            requestId++;
+            var currentId = requestId;
+
+            function finish() {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                requestId++;
+                busy = false;
+                waiting.shift().callback(cards, exhausted);
+                start();
+            }
+
+            function accept(input, fromFeed, next) {
+                var candidates = [], j, card, id, pending;
+                if (currentId !== requestId) return;
+                for (j = 0; j < input.length && checked < 700; j++) {
+                    card = input[j];
+                    if (!valid(card, fromFeed ? {} : config,
+                        formatDate(minimumAge), now.getFullYear())) continue;
+                    id = String(card.id);
+                    if (seen[id]) continue;
+                    if (hideViewed() && watched(card)) continue;
+                    seen[id] = true;
+                    candidates.push({ card: card, position: checked++ });
+                }
+                pending = candidates.length;
+                if (!pending) { next(); return; }
+                for (j = 0; j < candidates.length; j++) {
+                    (function (candidate) {
+                        reactionFor(candidate.card.id, function (reaction) {
+                            if (currentId !== requestId) return;
+                            if (reaction) {
+                                var copy = ratedCard(candidate.card, reaction,
+                                    candidate.position);
+                                delete copy.vlas_rank;
+                                cards.push(copy);
+                            }
+                            pending--;
+                            if (!pending) next();
+                        });
+                    })(candidates[j]);
+                }
+            }
+
+            function nextFeed(feed) {
+                var batch;
+                if (currentId !== requestId) return;
+                if (!feed || !feed.rows || !feed.rows[config.feed]) {
+                    exhausted = true; finish(); return;
+                }
+                batch = feed.rows[config.feed].slice(feedOffset, feedOffset + 20);
+                feedOffset += batch.length;
+                if (!batch.length) { exhausted = true; finish(); return; }
+                accept(batch, true, function () {
+                    if (cards.length >= request.wanted) {
+                        if (feedOffset >= feed.rows[config.feed].length) exhausted = true;
+                        finish();
+                    } else nextFeed(feed);
+                });
+            }
+
+            function nextPage() {
+                var requestParams = {}, field, current;
+                if (currentId !== requestId) return;
+                if (cards.length >= request.wanted || checked >= 700 ||
+                    page > (config.startPage || 1) + 34) {
+                    if (checked >= 700 || page > (config.startPage || 1) + 34)
+                        exhausted = true;
+                    finish(); return;
+                }
+                current = page++;
+                for (field in session.params) {
+                    if (Object.prototype.hasOwnProperty.call(session.params, field))
+                        requestParams[field] = session.params[field];
+                }
+                requestParams.page = current;
+                try {
+                    source.get(requestUrl(config, formatDate(minimumAge),
+                        now.getFullYear()), requestParams, function (data) {
+                        if (currentId !== requestId) return;
+                        if (!data || !data.results || !data.results.length) {
+                            exhausted = true; finish(); return;
+                        }
+                        accept(data.results, false, function () {
+                            if (data.total_pages && current >= Number(data.total_pages))
+                                exhausted = true;
+                            if (cards.length >= request.wanted || exhausted) finish();
+                            else nextPage();
+                        });
+                    }, function () { if (currentId === requestId) finish(); });
+                } catch (ignore) { finish(); }
+            }
+
+            timer = setTimeout(finish, 45000);
+            if (session.usedFeed) loadFeed(nextFeed);
+            else nextPage();
+        }
+
+        return { ensure: ensure };
+    }
+
     function install() {
         if (!window.Lampa || !Lampa.Api || !Lampa.Api.sources ||
-            !Lampa.Api.sources.tmdb || !Lampa.Api.partNext) return false;
+            !Lampa.Api.sources.tmdb) return false;
 
         var source = Lampa.Api.sources.tmdb;
         var originalMain = source.main;
-        if (typeof originalMain !== 'function' || typeof source.get !== 'function') return false;
+        var originalList = source.list;
+        if (typeof originalMain !== 'function' || typeof originalList !== 'function' ||
+            typeof source.get !== 'function') return false;
+
+        source.list = function (params, oncomplete, onerror) {
+            var match = /^vlas\/([a-z]+)$/.exec(params && params.url || '');
+            var session = match && rowSessions[match[1]];
+            var page;
+            if (!session) return originalList.apply(source, arguments);
+            page = Math.max(1, Math.min(FULL_PAGES, parseInt(params.page, 10) || 1));
+            if (!session.full) session.full = fullSession(source, session);
+            session.full.ensure(page * FULL_PAGE, function (cards, exhausted) {
+                var pageCards = cards.slice((page - 1) * FULL_PAGE,
+                    page * FULL_PAGE);
+                if (!pageCards.length) { onerror(); return; }
+                oncomplete({ results: pageCards, source: 'tmdb',
+                    page: page, title: session.title,
+                    total_pages: exhausted ?
+                        Math.max(1, Math.ceil(cards.length / FULL_PAGE)) : FULL_PAGES });
+            });
+        };
 
         source.main = function (params, oncomplete, onerror) {
             var rows = [];
@@ -430,13 +634,26 @@
             var i;
             for (i = 0; i < COLLECTIONS.length; i++) {
                 if (enabled(COLLECTIONS[i].id)) {
-                    rows.push(makeRow(source, COLLECTIONS[i], params || {}, used));
+                    rows.push(makeRow(source, COLLECTIONS[i], params || {}, used, i));
                 }
             }
             if (!rows.length) return originalMain.apply(source, arguments);
 
             function next(done, fail) {
-                Lampa.Api.partNext(rows, 2, done, fail);
+                var collected = [];
+                function take() {
+                    if (collected.length >= 2 || !rows.length) {
+                        if (collected.length) done(collected);
+                        else if (fail) fail();
+                        return;
+                    }
+                    rows.shift()(function (data) {
+                        if (data && data.results && data.results.length)
+                            collected.push(data);
+                        take();
+                    });
+                }
+                take();
             }
             next(oncomplete, onerror);
             return next;
@@ -455,6 +672,15 @@
                 component: 'my_lampa_home',
                 name: 'Моя главная',
                 icon: '<svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg"><path d="M3 11L12 4l9 7v10H3z" fill="none" stroke="currentColor" stroke-width="2"/></svg>'
+            });
+            Lampa.SettingsApi.addParam({
+                component: 'my_lampa_home',
+                param: { name: KEY + 'hide_viewed', type: 'trigger', default: true },
+                field: { name: 'Скрывать уже просмотренное',
+                    description: 'Использует отметки просмотра самой Lampa' },
+                onChange: function (value) {
+                    Lampa.Storage.set(KEY + 'hide_viewed', value);
+                }
             });
             for (var i = 0; i < COLLECTIONS.length; i++) {
                 (function (row) {
