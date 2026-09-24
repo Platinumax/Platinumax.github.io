@@ -71,8 +71,7 @@ def valid(movie):
         return False
     if len(date) != 10 or date > TODAY.isoformat():
         return False
-    if any(x in movie["genre_ids"] for x in (16, 27, 99, 10770)):
-        return False
+    # Genre preferences belong to each viewer and are applied by the plugin.
     return True
 
 
@@ -119,7 +118,7 @@ def main():
         rows[period] = row
 
     now = dt.datetime.now(dt.timezone.utc)
-    result = {"version": 1, "generated_at": now.isoformat(),
+    result = {"version": 1, "genre_policy": "all", "generated_at": now.isoformat(),
               "generated_at_epoch": int(now.timestamp()),
               "sources": ["Trakt popularity", "TMDB metadata", "CUB reactions in Lampa"],
               "rows": rows}
