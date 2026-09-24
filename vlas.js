@@ -1,4 +1,4 @@
-/* Vlas Home 5.0 — distinct collections and native full-screen continuation.
+/* Vlas Home 5.1 — collections, native continuation and optional Filmix.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -10,6 +10,9 @@
     var KEY = 'my_lampa_home_';
     var COMMON = '&without_genres=16,27,99,10770&with_runtime.gte=75&include_adult=false';
     var FEED = 'https://platinumax.github.io/data/rankings.json';
+    var FILMIX_SCRIPT = 'https://lampaplugins.github.io/store/fx.js';
+    var filmixLoading = false;
+    var filmixWaiters = [];
     var feedState = 0;
     var feedData = null;
     var feedWaiters = [];
@@ -661,7 +664,84 @@
 
         window.my_lampa_home_loaded = true;
         addSettings();
+        addFilmixButton();
         return true;
+    }
+
+    function filmixEnabled() {
+        try { return Lampa.Storage.get(KEY + 'filmix_button', true) !== false; }
+        catch (ignore) { return true; }
+    }
+
+    function loadFilmix(callback) {
+        var script, timeout, finished = false;
+        if (window.online_filmix) { callback(true); return; }
+        if (!Lampa.Manifest || Number(Lampa.Manifest.app_digital) < 155) {
+            callback(false); return;
+        }
+        filmixWaiters.push(callback);
+        if (filmixLoading) return;
+        filmixLoading = true;
+
+        function finish(ok) {
+            var waiting, i;
+            if (finished) return;
+            finished = true;
+            clearTimeout(timeout);
+            if (!ok && script && script.parentNode)
+                script.parentNode.removeChild(script);
+            filmixLoading = false;
+            waiting = filmixWaiters;
+            filmixWaiters = [];
+            for (i = 0; i < waiting.length; i++) waiting[i](ok);
+        }
+
+        try {
+            script = document.createElement('script');
+            script.src = FILMIX_SCRIPT;
+            script.async = true;
+            script.onload = function () { finish(!!window.online_filmix); };
+            script.onerror = function () { finish(false); };
+            timeout = setTimeout(function () { finish(!!window.online_filmix); }, 15000);
+            (document.head || document.body).appendChild(script);
+        } catch (ignore) { finish(false); }
+    }
+
+    function addFilmixButton() {
+        if (!Lampa.Listener || !Lampa.Listener.follow) return;
+        Lampa.Listener.follow('full', function (event) {
+            var movie, buttons, anchor, button, opening = false;
+            if (event.type !== 'complite' || !filmixEnabled() ||
+                window.online_filmix || !event.data || !event.data.movie ||
+                !event.object || !event.object.activity ||
+                typeof $ !== 'function') return;
+            movie = event.data.movie;
+            buttons = event.object.activity.render();
+            anchor = buttons.find('.view--torrent');
+            if (!anchor.length || buttons.find('.view--vlas-filmix').length) return;
+            button = $('<div class="full-start__button selector view--vlas-filmix" data-subtitle="Filmix"><svg width="50" height="50" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg><span>Filmix</span></div>');
+            button.on('hover:enter', function () {
+                if (opening) return;
+                opening = true;
+                loadFilmix(function (ok) {
+                    opening = false;
+                    if (!ok) {
+                        if (Lampa.Noty && Lampa.Noty.show)
+                            Lampa.Noty.show('Filmix недоступен. Проверьте сеть и версию Lampa.');
+                        return;
+                    }
+                    if (!filmixEnabled() || !document.documentElement.contains(button[0])) return;
+                    Lampa.Activity.push({
+                        url: '', title: Lampa.Lang.translate('title_online'),
+                        component: 'online_fxapi', search: movie.title || movie.name,
+                        search_one: movie.title || movie.name,
+                        search_two: movie.original_title || movie.original_name,
+                        movie: movie, page: 1
+                    });
+                });
+            });
+            anchor.after(button);
+        });
     }
 
     function addSettings() {
@@ -680,6 +760,15 @@
                     description: 'Использует отметки просмотра самой Lampa' },
                 onChange: function (value) {
                     Lampa.Storage.set(KEY + 'hide_viewed', value);
+                }
+            });
+            Lampa.SettingsApi.addParam({
+                component: 'my_lampa_home',
+                param: { name: KEY + 'filmix_button', type: 'trigger', default: true },
+                field: { name: 'Кнопка Filmix на странице фильма',
+                    description: 'Подключает Filmix после нажатия кнопки' },
+                onChange: function (value) {
+                    Lampa.Storage.set(KEY + 'filmix_button', value);
                 }
             });
             for (var i = 0; i < COLLECTIONS.length; i++) {
