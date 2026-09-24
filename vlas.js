@@ -1,4 +1,4 @@
-/* Vlas Home 5.3 — personal genre selection and weekly themed rotation.
+/* Vlas Home 5.3.1 — unified Vlas settings and personal genre selection.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -813,7 +813,7 @@
             }
             if (!anyEnabled) return originalMain.apply(source, arguments);
             if (!rows.length && Lampa.Noty)
-                Lampa.Noty.show('Все жанры для включённых рядов исключены. Измените настройки «Жанры Vlas».');
+                Lampa.Noty.show('Все жанры для включённых рядов исключены. Откройте «Настройки Vlas → Жанры для подборок».');
 
             function next(done, fail) {
                 var collected = [];
@@ -937,20 +937,30 @@
     }
 
     function addGenreSettings() {
-        var component = 'my_lampa_home_genres';
-        Lampa.SettingsApi.addComponent({
-            component: component, name: 'Жанры Vlas',
-            icon: '<svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg"><path d="M3 5h18M6 12h12M9 19h6" fill="none" stroke="currentColor" stroke-width="2"/></svg>'
-        });
-        Lampa.SettingsApi.addParam({
-            component: 'my_lampa_home',
-            param: { name: KEY + 'genres', type: 'button' },
-            field: { name: 'Жанры для подборок',
-                description: 'Персональный выбор и исключения для всех рядов Vlas и «Ещё»' },
-            onChange: function () {
-                if (Lampa.Settings && Lampa.Settings.create) Lampa.Settings.create(component);
-            }
-        });
+        var component = 'my_lampa_home';
+        // Register a nested page without adding a second root settings button.
+        // On older builds, keep the genre controls in the main Vlas section.
+        if (Lampa.Template && Lampa.Template.add && Lampa.Settings && Lampa.Settings.create) {
+            component = 'my_lampa_home_genres';
+            Lampa.Template.add('settings_' + component, '<div></div>');
+            Lampa.SettingsApi.addParam({
+                component: 'my_lampa_home',
+                param: { name: KEY + 'genres', type: 'button' },
+                field: { name: 'Жанры для подборок',
+                    description: 'Персональный выбор и исключения для всех рядов Vlas и «Ещё»' },
+                onChange: function () {
+                    Lampa.Settings.create(component, { onBack: function () {
+                        Lampa.Settings.create('my_lampa_home');
+                    } });
+                }
+            });
+            Lampa.SettingsApi.addParam({
+                component: component,
+                param: { name: KEY + 'genres_back', type: 'button' },
+                field: { name: 'Назад в настройки Vlas' },
+                onChange: function () { Lampa.Settings.create('my_lampa_home'); }
+            });
+        }
         Lampa.SettingsApi.addParam({
             component: component,
             param: { name: KEY + 'genres_help', type: 'static' },
@@ -995,7 +1005,7 @@
         try {
             Lampa.SettingsApi.addComponent({
                 component: 'my_lampa_home',
-                name: 'Моя главная',
+                name: 'Настройки Vlas',
                 icon: '<svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg"><path d="M3 11L12 4l9 7v10H3z" fill="none" stroke="currentColor" stroke-width="2"/></svg>'
             });
             addGenreSettings();

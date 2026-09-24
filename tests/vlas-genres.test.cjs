@@ -63,6 +63,7 @@ function app(options = {}) {
         }, set(k, value) { storage.set(k, value); }},
         Favorite: {check() { return {}; }},
         Noty: {show(text) { notices.push(text); }},
+        Template: {add() {}},
         Settings: {create(id) { opened.push(id); }, update() { updates++; }},
         SettingsApi: {addComponent(c) { components.push(c); }, addParam(p) { params.push(p); }}
     };
