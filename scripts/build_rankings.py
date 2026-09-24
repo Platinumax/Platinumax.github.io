@@ -26,7 +26,7 @@ def get_json(url, headers):
         return json.load(response)
 
 
-def trakt(period, limit=100):
+def trakt(period, limit=200):
     url = "https://api.trakt.tv/movies/watched/{}?page=1&limit={}".format(period, limit)
     payload = get_json(url, {
         "trakt-api-key": TRAKT_KEY,
@@ -84,7 +84,7 @@ def roll_halfyear(history):
     for day in days:
         for tmdb_id, count in history[day].items():
             counts[int(tmdb_id)] = counts.get(int(tmdb_id), 0) + count
-    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:100]
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:200]
 
 
 def main():
@@ -109,7 +109,7 @@ def main():
     rows = {}
     for period, movies in raw.items():
         row = []
-        for rank, (tmdb_id, watchers) in enumerate(movies):
+        for tmdb_id, watchers in movies:
             item = details[tmdb_id]
             if not valid(item):
                 continue

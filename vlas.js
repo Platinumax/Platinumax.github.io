@@ -1,4 +1,4 @@
-/* Vlas Home 5.1 — collections, native continuation and optional Filmix.
+/* Vlas Home 5.2 — weekly themed rotation and consistent continuation.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -28,6 +28,7 @@
     var ROW_PAGES = 12;
     var FULL_PAGE = 24;
     var FULL_PAGES = 6;
+    var ROTATION_WINDOWS = 6;
     var rowSessions = {};
 
     function loadSaved() {
@@ -205,24 +206,61 @@
           currentYear: true, ageDays: 14,
           query: 'sort_by=popularity.desc' },
         { id: 'best', title: 'Лучшие фильмы последних лет',
-          fromYears: 12, beforeYears: 4,
+          fromYears: 12, beforeYears: 4, rotate: 0,
           query: 'sort_by=popularity.desc' },
         { id: 'comedy', title: 'Комедии с хорошими отзывами',
-          fromYear: 1995, genre: 35,
+          fromYear: 1995, genre: 35, rotate: 1,
           query: 'with_genres=35&sort_by=popularity.desc' },
         { id: 'thriller', title: 'Триллеры и детективы с сильными оценками',
-          fromYear: 1995, genres: [53, 9648],
+          fromYear: 1995, genres: [53, 9648], rotate: 2,
           query: 'with_genres=53|9648&sort_by=popularity.desc' },
         { id: 'scifi', title: 'Фантастика с высоким рейтингом',
-          fromYear: 1995, genre: 878,
+          fromYear: 1995, genre: 878, rotate: 3,
           query: 'with_genres=878&sort_by=popularity.desc' },
         { id: 'gems', title: 'Хорошие фильмы вне главных хитов',
-          fromYear: 2000, startPage: 2,
+          fromYear: 2000, startPage: 2, rotate: 4,
           query: 'sort_by=popularity.desc' },
         { id: 'classics', title: 'Проверенное кино до 2000 года',
-          beforeYear: 2000,
+          beforeYear: 2000, rotate: 5,
           query: 'sort_by=popularity.desc' }
     ];
+
+    function weekNumber(date) {
+        // Monday 00:00 UTC, independent of the TV's local timezone.
+        return Math.floor((Date.UTC(date.getUTCFullYear(), date.getUTCMonth(),
+            date.getUTCDate()) - Date.UTC(1970, 0, 5)) / 604800000);
+    }
+
+    function firstPage(config, date) {
+        var base = config.startPage || 1;
+        if (typeof config.rotate !== 'number') return base;
+        return base + 2 * ((weekNumber(date) + config.rotate) % ROTATION_WINDOWS);
+    }
+
+    function lastWeekIds(config, week) {
+        var saved, ids, recent = {}, i;
+        if (typeof config.rotate !== 'number') return recent;
+        try { saved = Lampa.Storage.get(KEY + 'rotation_' + config.id, null); }
+        catch (ignore) { return recent; }
+        ids = saved && (saved.week === week ? saved.previous :
+            saved.week === week - 1 ? saved.current : null);
+        if (ids && ids.length) for (i = 0; i < ids.length; i++)
+            recent[String(ids[i])] = true;
+        return recent;
+    }
+
+    function saveWeekIds(config, week, cards) {
+        var saved, previous = [], ids = [], i;
+        if (typeof config.rotate !== 'number' || !cards.length) return;
+        try {
+            saved = Lampa.Storage.get(KEY + 'rotation_' + config.id, null);
+            if (saved && saved.week === week) previous = saved.previous || [];
+            else if (saved && saved.week === week - 1) previous = saved.current || [];
+            for (i = 0; i < cards.length; i++) ids.push(cards[i].id);
+            Lampa.Storage.set(KEY + 'rotation_' + config.id,
+                { week: week, current: ids, previous: previous });
+        } catch (ignore) { /* Weekly page rotation still works without storage. */ }
+    }
 
     function enabled(id) {
         try { return Lampa.Storage.get(KEY + id, true) !== false; }
@@ -329,7 +367,7 @@
         return copy;
     }
 
-    function makeRow(source, config, params, used, rowIndex) {
+    function makeRow(source, config, params, used, visibleState) {
         return function (ready) {
             var finished = false;
             var timer;
@@ -341,7 +379,13 @@
             var repeats = [];
             var seen = {};
             var checked = 0;
-            var page = config.startPage || 1;
+            var week = weekNumber(now);
+            var recent = lastWeekIds(config, week);
+            var basePage = config.startPage || 1;
+            var rotatingPage = firstPage(config, now);
+            var page = rotatingPage;
+            var pagesRead = 0;
+            var wrapped = false;
             var feedCards = null;
             var feedOffset = 0;
             var usedFeed = false;
@@ -349,11 +393,11 @@
             var rowTitle = config.fallbackTitle || config.title;
 
             function finish() {
-                var i, data, hasMore;
+                var i, data, hasMore, preview;
                 if (finished) return;
                 finished = true;
                 clearTimeout(timer);
-                for (i = 0; i < repeats.length && results.length < TARGET; i++) {
+                for (i = 0; i < repeats.length && results.length < TARGET + 1; i++) {
                     results.push(repeats[i]);
                 }
                 if (config.feed) {
@@ -361,18 +405,22 @@
                 } else {
                     results.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
                 }
-                hasMore = results.length > TARGET || !exhausted;
-                if (results.length > TARGET) results.length = TARGET;
-                for (i = 0; i < results.length; i++) {
-                    used[String(results[i].id)] = config.id;
-                    delete results[i].vlas_rank;
-                }
+                hasMore = results.length > TARGET;
+                for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
+                preview = results.slice(0, TARGET);
+                for (i = 0; i < preview.length; i++)
+                    used[String(preview[i].id)] = config.id;
+                if (preview.length) visibleState.count++;
+                saveWeekIds(config, week, preview);
                 rowSessions[config.id] = {
-                    cards: results.slice(0), config: config, params: params,
+                    cards: preview, extra: results.slice(TARGET), seen: seen,
+                    checked: checked, page: page, pagesRead: pagesRead,
+                    wrapped: wrapped, feedOffset: feedOffset,
+                    rotatingPage: rotatingPage, config: config, params: params,
                     used: used, title: rowTitle, hasMore: hasMore,
-                    usedFeed: usedFeed, rowIndex: rowIndex
+                    usedFeed: usedFeed
                 };
-                data = { results: results, title: rowTitle, name: rowTitle,
+                data = { results: preview, title: rowTitle, name: rowTitle,
                     source: 'tmdb', url: 'vlas/' + config.id,
                     total_pages: hasMore ? FULL_PAGES : 1 };
                 ready(data);
@@ -385,10 +433,11 @@
                     // Feed rows describe when viewers watched a film, regardless of release year.
                     if (!valid(card, fromFeed ? {} : config, cutoff, now.getFullYear())) continue;
                     id = String(card.id);
-                    if (seen[id] || (rowIndex < 5 && used[id])) continue;
+                    if (seen[id] || (visibleState.count < 5 && used[id])) continue;
                     if (hideViewed() && watched(card)) continue;
                     seen[id] = true;
-                    candidates.push({ card: card, repeat: !config.feed && !!used[id],
+                    candidates.push({ card: card, repeat: (!config.feed && !!used[id]) ||
+                        !!recent[id],
                         position: checked++ });
                     if (checked >= ROW_CANDIDATES) break;
                 }
@@ -406,7 +455,7 @@
                             }
                             pending--;
                             if (!pending) {
-                                if (results.length >= TARGET) finish();
+                                if (results.length >= TARGET + 1) finish();
                                 else next();
                             }
                         });
@@ -417,7 +466,7 @@
             function nextFeed() {
                 var batch;
                 if (finished) return;
-                if (results.length >= TARGET || checked >= ROW_CANDIDATES ||
+                if (results.length >= TARGET + 1 || checked >= ROW_CANDIDATES ||
                     feedOffset >= feedCards.length) {
                     if (feedOffset >= feedCards.length) exhausted = true;
                     finish(); return;
@@ -430,9 +479,12 @@
             function nextPage() {
                 var requestParams = {}, field, current;
                 if (finished) return;
-                if (results.length >= TARGET || checked >= ROW_CANDIDATES ||
-                    page > (config.startPage || 1) + ROW_PAGES - 1) { finish(); return; }
+                if (results.length >= TARGET + 1 || checked >= ROW_CANDIDATES ||
+                    pagesRead >= ROW_PAGES || (wrapped && page >= rotatingPage)) {
+                    finish(); return;
+                }
                 current = page++;
+                pagesRead++;
                 for (field in params) if (Object.prototype.hasOwnProperty.call(params, field)) {
                     requestParams[field] = params[field];
                 }
@@ -441,11 +493,16 @@
                     source.get(requestUrl(config, cutoff, now.getFullYear()), requestParams, function (data) {
                         if (finished) return;
                         if (!data || !data.results || !data.results.length) {
-                            exhausted = true; finish(); return;
+                            if (!wrapped && rotatingPage > basePage) {
+                                wrapped = true; page = basePage; nextPage();
+                            } else { exhausted = true; finish(); }
+                            return;
                         }
                         check(data.results, false, function () {
                             if (data.total_pages && current >= Number(data.total_pages)) {
-                                exhausted = true; finish();
+                                if (!wrapped && rotatingPage > basePage) {
+                                    wrapped = true; page = basePage; nextPage();
+                                } else { exhausted = true; finish(); }
                             }
                             else nextPage();
                         });
@@ -468,23 +525,24 @@
     }
 
     // The category/full screen asks the selected row for additional pages.
-    // Retain its vetted preview and fill later pages only when the user opens it.
+    // Continue from the vetted preview's cursor instead of restarting the search.
     function fullSession(source, session) {
-        var cards = session.cards.slice(0);
-        var seen = {};
+        var cards = session.cards.concat(session.extra || []);
+        var seen = session.seen || {};
         var config = session.config;
         var now = new Date();
         var minimumAge = new Date(now.getTime());
-        var page = config.startPage || 1;
-        var feedOffset = 0;
-        var checked = 0;
+        var page = session.page;
+        var pagesRead = session.pagesRead;
+        var rotatingPage = session.rotatingPage;
+        var wrapped = session.wrapped;
+        var feedOffset = session.feedOffset;
+        var checked = session.checked;
         var exhausted = !session.hasMore;
         var requestId = 0;
         var busy = false;
         var waiting = [];
-        var i;
         minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
-        for (i = 0; i < cards.length; i++) seen[String(cards[i].id)] = true;
 
         function ensure(wanted, callback) {
             waiting.push({ wanted: wanted, callback: callback });
@@ -515,7 +573,7 @@
             }
 
             function accept(input, fromFeed, next) {
-                var candidates = [], j, card, id, pending;
+                var candidates = [], approved = [], j, card, id, pending;
                 if (currentId !== requestId) return;
                 for (j = 0; j < input.length && checked < 700; j++) {
                     card = input[j];
@@ -536,11 +594,20 @@
                             if (reaction) {
                                 var copy = ratedCard(candidate.card, reaction,
                                     candidate.position);
-                                delete copy.vlas_rank;
-                                cards.push(copy);
+                                approved.push(copy);
                             }
                             pending--;
-                            if (!pending) next();
+                            if (!pending) {
+                                approved.sort(function (a, b) {
+                                    return config.feed ? b.vlas_rank - a.vlas_rank :
+                                        b.vlas_score - a.vlas_score;
+                                });
+                                for (var k = 0; k < approved.length; k++) {
+                                    delete approved[k].vlas_rank;
+                                    cards.push(approved[k]);
+                                }
+                                next();
+                            }
                         });
                     })(candidates[j]);
                 }
@@ -567,12 +634,14 @@
                 var requestParams = {}, field, current;
                 if (currentId !== requestId) return;
                 if (cards.length >= request.wanted || checked >= 700 ||
-                    page > (config.startPage || 1) + 34) {
-                    if (checked >= 700 || page > (config.startPage || 1) + 34)
+                    pagesRead >= 35 || (wrapped && page >= rotatingPage)) {
+                    if (checked >= 700 || pagesRead >= 35 ||
+                        (wrapped && page >= rotatingPage))
                         exhausted = true;
                     finish(); return;
                 }
                 current = page++;
+                pagesRead++;
                 for (field in session.params) {
                     if (Object.prototype.hasOwnProperty.call(session.params, field))
                         requestParams[field] = session.params[field];
@@ -583,11 +652,18 @@
                         now.getFullYear()), requestParams, function (data) {
                         if (currentId !== requestId) return;
                         if (!data || !data.results || !data.results.length) {
-                            exhausted = true; finish(); return;
+                            if (!wrapped && rotatingPage > (config.startPage || 1)) {
+                                wrapped = true; page = config.startPage || 1;
+                                nextPage();
+                            } else { exhausted = true; finish(); }
+                            return;
                         }
                         accept(data.results, false, function () {
-                            if (data.total_pages && current >= Number(data.total_pages))
-                                exhausted = true;
+                            if (data.total_pages && current >= Number(data.total_pages)) {
+                                if (!wrapped && rotatingPage > (config.startPage || 1)) {
+                                    wrapped = true; page = config.startPage || 1;
+                                } else exhausted = true;
+                            }
                             if (cards.length >= request.wanted || exhausted) finish();
                             else nextPage();
                         });
@@ -634,10 +710,12 @@
         source.main = function (params, oncomplete, onerror) {
             var rows = [];
             var used = {};
+            var visibleState = { count: 0 };
             var i;
             for (i = 0; i < COLLECTIONS.length; i++) {
                 if (enabled(COLLECTIONS[i].id)) {
-                    rows.push(makeRow(source, COLLECTIONS[i], params || {}, used, i));
+                    rows.push(makeRow(source, COLLECTIONS[i], params || {},
+                        used, visibleState));
                 }
             }
             if (!rows.length) return originalMain.apply(source, arguments);
