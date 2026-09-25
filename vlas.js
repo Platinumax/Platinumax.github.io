@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.1 — unified Vlas settings and personal genre selection.
+/* Vlas Home 5.3.2 — monthly theatrical, digital and physical releases.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -204,7 +204,7 @@
           query: 'trending/movie/week' },
         { id: 'month', title: 'Самые популярные за месяц',
           fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
-          releaseDays: 30,
+          releaseDays: 30, releaseTypes: '3|4|5',
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
@@ -367,7 +367,9 @@
         if (config.beforeYear && Number(date.substr(0, 4)) >= config.beforeYear) return false;
         if (config.fromYears && Number(date.substr(0, 4)) < year - config.fromYears) return false;
         if (config.currentYear && Number(date.substr(0, 4)) !== year) return false;
-        if (config.releaseDays) {
+        // Discover validates dated release events. The card's release_date can
+        // still be its much earlier premiere, so do not reapply that window here.
+        if (config.releaseDays && !config.releaseTypes) {
             var first = new Date();
             first.setDate(first.getDate() - config.releaseDays);
             if (date < formatDate(first)) return false;
@@ -402,7 +404,11 @@
         if (config.releaseDays) {
             boundary = new Date();
             boundary.setDate(boundary.getDate() - config.releaseDays);
-            url += '&primary_release_date.gte=' + formatDate(boundary);
+            if (config.releaseTypes) {
+                url += '&release_date.gte=' + formatDate(boundary) +
+                    '&release_date.lte=' + cutoff +
+                    '&with_release_type=' + config.releaseTypes;
+            } else url += '&primary_release_date.gte=' + formatDate(boundary);
         }
         if (config.olderThanDays) {
             boundary = new Date();
