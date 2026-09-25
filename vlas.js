@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.9 — monthly releases use the same selection as weekly trends.
+/* Vlas Home 5.3.10 — keep monthly releases broad while blocking clear negatives.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -121,7 +121,8 @@
                         complete(null, false);
                     } else {
                         source.reactionsGet({ method: 'movie', id: movieId }, function (data) {
-                            complete(readReactions(data));
+                            if (!data || !data.result) complete(null, false);
+                            else complete(readReactions(data));
                         });
                     }
                 } catch (ignore) { complete(null, false); }
@@ -210,6 +211,7 @@
         { id: 'month', title: 'Сейчас популярны: релизы за месяц',
           fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
           releaseDays: 30, feedKeepsFilters: true, feedFallback: true,
+          fillWeak: true,
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
@@ -444,9 +446,34 @@
         return copy;
     }
 
+    function fillerCard(card, reaction, position) {
+        var copy = {}, field, score = reaction && isFinite(reaction.score) ?
+            reaction.score : Number(card.vote_average) || 0;
+        for (field in card) if (Object.prototype.hasOwnProperty.call(card, field)) {
+            copy[field] = card[field];
+        }
+        if (reaction && reaction.total >= 15 && reaction.score) {
+            copy.cub_hundred_rating = 0;
+            copy.cub_hundred_fire = 0;
+            copy.vote_average = Math.round(reaction.score * 10) / 10;
+            copy.vote_count = reaction.total;
+        }
+        copy.vlas_score = score;
+        copy.vlas_rank = (1 - position / 400) * 6 + score * 0.2;
+        return copy;
+    }
+
     function approvedReaction(reaction, config) {
         if (!reaction || reaction.blocked || reaction.weak || reaction.total < 15) return false;
         return !reaction.soft && reaction.score >= 5.6;
+    }
+
+    function canFillWeak(reaction, config) {
+        if (!config.fillWeak || !reaction || reaction.blocked) return false;
+        if (reaction.total >= 15 && reaction.negative > 0)
+            return reaction.positive > reaction.negative &&
+                reaction.negative / reaction.total < 0.45;
+        return true;
     }
 
     function makeRow(source, config, params, used, visibleState, filter) {
@@ -458,6 +485,7 @@
             minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
             var cutoff = formatDate(minimumAge);
             var results = [];
+            var fillers = [];
             var repeats = [];
             var seen = {};
             var checked = 0;
@@ -490,6 +518,13 @@
                     results.sort(function (a, b) { return b.vlas_rank - a.vlas_rank; });
                 } else {
                     results.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
+                }
+                if (config.fillWeak && results.length < TARGET + 1) {
+                    fillers.sort(function (a, b) {
+                        return b.vlas_rank - a.vlas_rank || b.vlas_score - a.vlas_score;
+                    });
+                    for (i = 0; i < fillers.length && results.length < TARGET + 1; i++)
+                        results.push(fillers[i]);
                 }
                 hasMore = results.length > TARGET;
                 for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
@@ -543,6 +578,9 @@
                             if (approvedReaction(reaction, config)) {
                                 copy = ratedCard(candidate.card, reaction, candidate.position);
                                 (candidate.repeat ? repeats : results).push(copy);
+                            } else if (canFillWeak(reaction, config)) {
+                                fillers.push(fillerCard(candidate.card, reaction,
+                                    candidate.position));
                             }
                             pending--;
                             if (!pending) {
@@ -675,7 +713,7 @@
             }
 
             function accept(input, fromFeed, next) {
-                var candidates = [], approved = [], j, card, id, pending;
+                var candidates = [], approved = [], fillers = [], j, card, id, pending;
                 if (currentId !== requestId) return;
                 for (j = 0; j < input.length && checked < 700; j++) {
                     card = input[j];
@@ -697,6 +735,9 @@
                                 var copy = ratedCard(candidate.card, reaction,
                                     candidate.position);
                                 approved.push(copy);
+                            } else if (canFillWeak(reaction, config)) {
+                                fillers.push(fillerCard(candidate.card, reaction,
+                                    candidate.position));
                             }
                             pending--;
                             if (!pending) {
@@ -704,9 +745,17 @@
                                     return config.feed ? b.vlas_rank - a.vlas_rank :
                                         b.vlas_score - a.vlas_score;
                                 });
+                                fillers.sort(function (a, b) {
+                                    return b.vlas_rank - a.vlas_rank ||
+                                        b.vlas_score - a.vlas_score;
+                                });
                                 for (var k = 0; k < approved.length; k++) {
                                     delete approved[k].vlas_rank;
                                     cards.push(approved[k]);
+                                }
+                                for (k = 0; k < fillers.length; k++) {
+                                    delete fillers[k].vlas_rank;
+                                    cards.push(fillers[k]);
                                 }
                                 next();
                             }
