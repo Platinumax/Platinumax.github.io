@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.8 — require verified audience approval for monthly premieres.
+/* Vlas Home 5.3.9 — monthly releases use the same selection as weekly trends.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -209,7 +209,7 @@
           query: 'trending/movie/week' },
         { id: 'month', title: 'Сейчас популярны: релизы за месяц',
           fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
-          currentMonth: true,
+          releaseDays: 30, feedKeepsFilters: true, feedFallback: true,
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
@@ -446,10 +446,6 @@
 
     function approvedReaction(reaction, config) {
         if (!reaction || reaction.blocked || reaction.weak || reaction.total < 15) return false;
-        if (config.currentMonth) {
-            return reaction.score >= 5 && reaction.positive > reaction.negative &&
-                reaction.negative / reaction.total < 0.38;
-        }
         return !reaction.soft && reaction.score >= 5.6;
     }
 
@@ -462,7 +458,6 @@
             minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
             var cutoff = formatDate(minimumAge);
             var results = [];
-            var lowerRated = [];
             var repeats = [];
             var seen = {};
             var checked = 0;
@@ -496,15 +491,6 @@
                 } else {
                     results.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
                 }
-                // Prefer all qualifying 5.6+ films. Use milder scores only to
-                // reach ten monthly premieres, never to replace stronger films.
-                if (config.currentMonth && results.length < 10) {
-                    lowerRated.sort(function (a, b) {
-                        return b.vlas_score - a.vlas_score || b.vlas_rank - a.vlas_rank;
-                    });
-                    for (i = 0; i < lowerRated.length && results.length < 10; i++)
-                        results.push(lowerRated[i]);
-                }
                 hasMore = results.length > TARGET;
                 for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
                 preview = results.slice(0, TARGET);
@@ -519,6 +505,7 @@
                     wrapped: wrapped, feedOffset: feedOffset,
                     rotatingPage: rotatingPage, config: config, params: params,
                     used: used, title: rowTitle, hasMore: hasMore,
+                    cutoff: cutoff,
                     month: cutoff.substr(0, 7),
                     usedFeed: usedFeed
                 };
@@ -532,9 +519,9 @@
                 var card, id, i, candidates = [], pending;
                 for (i = 0; i < input.length; i++) {
                     card = input[i];
-                    // The monthly row always requires a premiere this calendar month,
-                    // including feed data. Other feed periods may contain older films.
-                    if (!valid(card, fromFeed && !config.currentMonth ? {} : config,
+                    // Some prepared feeds must still respect the row's local date
+                    // window, while broad ranking feeds stay as-is.
+                    if (!valid(card, fromFeed && !config.feedKeepsFilters ? {} : config,
                         cutoff, now.getFullYear(), filter)) continue;
                     id = String(card.id);
                     if (seen[id] || (visibleState.count < 5 && used[id])) continue;
@@ -555,8 +542,7 @@
                             if (finished) return;
                             if (approvedReaction(reaction, config)) {
                                 copy = ratedCard(candidate.card, reaction, candidate.position);
-                                if (config.currentMonth && reaction.score < 5.6) lowerRated.push(copy);
-                                else (candidate.repeat ? repeats : results).push(copy);
+                                (candidate.repeat ? repeats : results).push(copy);
                             }
                             pending--;
                             if (!pending) {
@@ -574,10 +560,9 @@
                 if (results.length >= TARGET + 1 || checked >= ROW_CANDIDATES ||
                     feedOffset >= feedCards.length) {
                     if (feedOffset >= feedCards.length) {
-                        // Rankings feeds can be short after the strict calendar-month
-                        // filter. Continue with the normal monthly source so the row
-                        // can still reach the intended minimum of ten premieres.
-                        if (config.currentMonth &&
+                        // Short prepared feeds continue through the normal row source
+                        // with the same local date window and quality rules.
+                        if (config.feedFallback &&
                             results.length < TARGET + 1 &&
                             checked < ROW_CANDIDATES && pagesRead < ROW_PAGES) {
                             usedFeed = false;
@@ -694,7 +679,7 @@
                 if (currentId !== requestId) return;
                 for (j = 0; j < input.length && checked < 700; j++) {
                     card = input[j];
-                    if (!valid(card, fromFeed && !config.currentMonth ? {} : config,
+                    if (!valid(card, fromFeed && !config.feedKeepsFilters ? {} : config,
                         formatDate(minimumAge), now.getFullYear(), filter)) continue;
                     id = String(card.id);
                     if (seen[id]) continue;
@@ -812,8 +797,11 @@
             var page, config, i, filter = genreFilter();
             if (!match) return originalList.apply(source, arguments);
             // Rebuild stale previews; never send a Vlas URL to the native API.
-            if (!session || session.filter.key !== filter.key || (session.config.currentMonth &&
-                session.month !== formatDate(new Date()).substr(0, 7))) {
+            if (!session || session.filter.key !== filter.key ||
+                (session.config.currentMonth &&
+                session.month !== formatDate(new Date()).substr(0, 7)) ||
+                (session.config.releaseDays &&
+                session.cutoff !== formatDate(new Date()))) {
                 for (i = 0; i < COLLECTIONS.length; i++)
                     if (COLLECTIONS[i].id === match[1]) config = COLLECTIONS[i];
                 if (!config || !enabled(config.id) || !rowAllowed(config, filter)) {
@@ -829,8 +817,11 @@
             page = Math.max(1, Math.min(FULL_PAGES, parseInt(params.page, 10) || 1));
             if (!session.full) session.full = fullSession(source, session);
             session.full.ensure(page * FULL_PAGE, function (cards, exhausted) {
-                if (session.filter.key !== genreFilter().key || (session.config.currentMonth &&
-                    session.month !== formatDate(new Date()).substr(0, 7))) {
+                if (session.filter.key !== genreFilter().key ||
+                    (session.config.currentMonth &&
+                    session.month !== formatDate(new Date()).substr(0, 7)) ||
+                    (session.config.releaseDays &&
+                    session.cutoff !== formatDate(new Date()))) {
                     source.list(params, oncomplete, onerror);
                     return;
                 }
