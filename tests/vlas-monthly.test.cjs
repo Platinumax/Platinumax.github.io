@@ -150,6 +150,15 @@ function app(options = {}) {
         'Short monthly feed never requested fallback discovery pages');
     assert.ok(fedThenFilled.results.every(c => c.release_date >= '2026-01-01' &&
         c.release_date <= '2026-01-15'));
+    const noCub = Array.from({length: 20}, (_, i) => movie(900 + i, '2026-01-07'));
+    const scarceReactions = id => id >= 900 ? [] : ratings(id);
+    const filledWithoutCub = app({onlyMonth: true, reactions: scarceReactions,
+        catalog: invalid.concat(premieres.slice(0, 3), noCub)});
+    const [weakFilled] = await filledWithoutCub.main();
+    assert.equal(weakFilled.results.length, 10, 'Current-month row did not use low-signal fillers after verified candidates');
+    assert.ok(weakFilled.results.slice(0, 3).every(c => c.vlas_score >= 5.6));
+    assert.ok(weakFilled.results.slice(3).every(c => c.vlas_score === 0));
+    assert.ok(!weakFilled.results.some(c => c.id === 306));
     const tiny = app({onlyMonth: true, reactions: ratings, catalog: premieres.slice(0, 3).concat(mild.slice(0, 2))});
     assert.equal((await tiny.main())[0].results.length, 5, 'Not enough valid films must not fabricate ten');
     // The next calendar month must invalidate an already opened More session.

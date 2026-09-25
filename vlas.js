@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.6 — continue monthly fallback after short feed rows.
+/* Vlas Home 5.3.7 — fill monthly premieres to ten with cautious low-signal fallback.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -53,7 +53,7 @@
 
     function rememberReaction(id, value) {
         var keys, i, now = new Date().getTime();
-        savedReactions[id] = { at: now, value: value, version: 2,
+        savedReactions[id] = { at: now, value: value, version: 3,
             ttl: value ? REACTION_TTL : 20 * 60 * 1000 };
         if (saveTimer) return;
         saveTimer = setTimeout(function () {
@@ -72,7 +72,7 @@
         loadSaved();
         var key = String(id), cached = reactionCache[key];
         var saved = savedReactions[key];
-        if (saved && saved.version === 2 && saved.at && new Date().getTime() - saved.at <
+        if (saved && saved.version === 3 && saved.at && new Date().getTime() - saved.at <
             (saved.ttl || REACTION_TTL)) {
             callback(saved.value);
             return;
@@ -133,7 +133,7 @@
         var counts = { fire: 0, nice: 0, think: 0, bore: 0, shit: 0 };
         var rows = data && data.result;
         var i, type, count, total, positive, negative, score;
-        if (!rows || !rows.length) return null;
+        if (!rows || !rows.length) return { score: 0, total: 0, weak: true };
         for (i = 0; i < rows.length; i++) {
             type = rows[i] && rows[i].type;
             count = Number(rows[i] && rows[i].counter);
@@ -141,17 +141,19 @@
                 isFinite(count) && count >= 0) counts[type] += count;
         }
         total = counts.fire + counts.nice + counts.think + counts.bore + counts.shit;
-        if (total < 15) return null;
         positive = counts.fire + counts.nice;
         negative = counts.bore + counts.shit;
         // A strong negative signal vetoes a movie regardless of its popularity.
         if (total >= 30 && (negative / total >= 0.38 ||
-            (counts.shit >= 20 && counts.shit / total >= 0.2))) return null;
-        score = (10 * counts.fire + 8 * counts.nice + 5 * counts.think +
-            2 * counts.bore + 20 * 5) / (total + 20);
-        // Cache safe reactions down to 5.0; each row applies its own threshold.
-        if (score < 5.0 || positive <= negative) return null;
-        return { score: score, total: total };
+            (counts.shit >= 20 && counts.shit / total >= 0.2))) {
+            return { blocked: true, total: total };
+        }
+        score = total ? (10 * counts.fire + 8 * counts.nice + 5 * counts.think +
+            2 * counts.bore + 20 * 5) / (total + 20) : 0;
+        if (total < 15) return { score: score, total: total, weak: true };
+        if (score >= 5.6 && positive > negative) return { score: score, total: total };
+        if (score >= 4.5) return { score: score, total: total, soft: true };
+        return { blocked: true, total: total };
     }
 
     function loadFeed(callback) {
@@ -441,6 +443,16 @@
         return copy;
     }
 
+    function fallbackCard(card, position) {
+        var copy = {}, field;
+        for (field in card) if (Object.prototype.hasOwnProperty.call(card, field)) {
+            copy[field] = card[field];
+        }
+        copy.vlas_score = 0;
+        copy.vlas_rank = 1 - position / 400;
+        return copy;
+    }
+
     function makeRow(source, config, params, used, visibleState, filter) {
         return function (ready) {
             var finished = false;
@@ -451,6 +463,7 @@
             var cutoff = formatDate(minimumAge);
             var results = [];
             var lowerRated = [];
+            var unverifiedRated = [];
             var repeats = [];
             var seen = {};
             var checked = 0;
@@ -492,6 +505,13 @@
                     });
                     for (i = 0; i < lowerRated.length && results.length < 10; i++)
                         results.push(lowerRated[i]);
+                }
+                if (config.currentMonth && results.length < 10) {
+                    unverifiedRated.sort(function (a, b) {
+                        return b.vlas_rank - a.vlas_rank;
+                    });
+                    for (i = 0; i < unverifiedRated.length && results.length < 10; i++)
+                        results.push(unverifiedRated[i]);
                 }
                 hasMore = results.length > TARGET;
                 for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
@@ -541,11 +561,16 @@
                         reactionFor(candidate.card.id, function (reaction) {
                             var copy;
                             if (finished) return;
-                            if (reaction && reaction.score >= 5.6) {
+                            if (reaction && !reaction.blocked && !reaction.weak &&
+                                !reaction.soft && reaction.score >= 5.6) {
                                 copy = ratedCard(candidate.card, reaction, candidate.position);
                                 (candidate.repeat ? repeats : results).push(copy);
-                            } else if (config.currentMonth && reaction && reaction.score >= 5.0) {
+                            } else if (config.currentMonth && reaction &&
+                                !reaction.blocked && !reaction.weak && reaction.score >= 4.5) {
                                 lowerRated.push(ratedCard(candidate.card, reaction, candidate.position));
+                            } else if (config.currentMonth &&
+                                (!reaction || (reaction.weak && !reaction.blocked))) {
+                                unverifiedRated.push(fallbackCard(candidate.card, candidate.position));
                             }
                             pending--;
                             if (!pending) {
@@ -567,7 +592,7 @@
                         // filter. Continue with the normal monthly source so the row
                         // can still reach the intended minimum of ten premieres.
                         if (config.currentMonth &&
-                            results.length + lowerRated.length < 10 &&
+                            results.length + lowerRated.length + unverifiedRated.length < 10 &&
                             checked < ROW_CANDIDATES && pagesRead < ROW_PAGES) {
                             nextPage(); return;
                         }
