@@ -132,8 +132,8 @@ function app(options = {}) {
         catalog: premieres.slice(0, 6).concat(mild)});
     const isolatedRows = await isolated.main();
     assert.equal(isolatedRows[0].results.length, 3);
-    assert.equal(isolatedRows[1].results.length, 23);
-    assert.equal(new Set(isolatedRows.flatMap(r => r.results.map(c => c.id))).size, 26);
+    assert.equal(isolatedRows[1].results.length, 24);
+    assert.equal(new Set(isolatedRows.flatMap(r => r.results.map(c => c.id))).size, 24);
     const enough = app({onlyMonth: true, reactions: ratings, catalog: mild.concat(premieres)});
     const [strong] = await enough.main();
     assert.equal(strong.results.length, 24, 'Ten became a cap for strong premieres');
@@ -163,6 +163,16 @@ function app(options = {}) {
     assert.equal(wideRow.results.length, 24, 'Monthly preview did not reach a full row');
     assert.ok(wideRow.total_pages > 1, 'Monthly row did not expose More');
     assert.ok((await wide.list(2)).results.length > 0, 'Monthly More did not return continuation');
+    const lowRated = Array.from({length: 40}, (_, i) => {
+        const card = movie(1300 + i, '2026-01-07');
+        card.vote_average = 4.9;
+        return card;
+    });
+    const lowUser = app({onlyMonth: true, reactions: id => id >= 1300 ? [] : ratings(id),
+        catalog: invalid.concat(premieres.slice(0, 3), lowRated)});
+    const [lowRow] = await lowUser.main();
+    assert.equal(lowRow.results.length, 3, 'Low-rated weak fillers entered monthly row');
+    assert.ok(!lowRow.results.some(c => c.id >= 1300));
     // Screenshot regression: all nine reactions are negative, not an unknown rating.
     const badSamples = [
         [{type: 'shit', counter: 5}, {type: 'bore', counter: 4}],
