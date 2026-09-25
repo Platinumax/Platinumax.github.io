@@ -20,13 +20,15 @@ function app(options = {}) {
         static now() { return new Clock().getTime(); }
     }
     const requests = [], reacted = [];
+    const storage = options.storage || new Map();
+    const weekCatalog = options.weekly || weekly;
     const catalog = options.catalog || weekly.concat(invalid, boundaries, premieres);
     const tmdb = {
         main() { throw Error('Unexpected native main'); },
         list() { throw Error('Unexpected native list'); },
         get(url, params, done) {
             requests.push({url, page: params.page});
-            let selected = url.startsWith('discover/') ? catalog : weekly;
+            let selected = url.startsWith('discover/') ? catalog : weekCatalog;
             if (url.startsWith('discover/') && !options.leaky) {
                 const q = new URLSearchParams(url.split('?')[1]);
                 const from = q.get('primary_release_date.gte'), to = q.get('primary_release_date.lte');
@@ -43,23 +45,25 @@ function app(options = {}) {
             this.status = options.feed ? 200 : 404; this.readyState = 4;
             this.responseText = JSON.stringify({version: 1, genre_policy: 'all',
                 generated_at_epoch: Clock.now() / 1000,
-                rows: {weekly, monthly: catalog}});
+                rows: {weekly: weekCatalog, monthly: catalog}});
             this.onreadystatechange();
         }
     }
     const Lampa = {
         Api: {sources: {tmdb, cub: {reactionsGet(p, done) {
             reacted.push(Number(p.id));
-            done({result: [{type: Number(p.id) === 306 ? 'shit' : 'fire', counter: 50}]});
+            done({result: options.reactions ? options.reactions(Number(p.id)) :
+                [{type: Number(p.id) === 306 ? 'shit' : 'fire', counter: 50}]});
         }}}},
         Storage: {get(key, fallback) {
+            if (storage.has(key)) return storage.get(key);
             if (key === 'my_lampa_home_week') return !options.onlyMonth;
             if (key === 'my_lampa_home_month') return true;
             if (key === 'my_lampa_home_genre_35' && options.comedy) return 'include';
             if (key.startsWith('my_lampa_home_genre_') ||
                 key === 'my_lampa_home_hide_viewed' || key.endsWith('reaction_cache')) return fallback;
             return false;
-        }, set() {}},
+        }, set(key, value) { storage.set(key, value); }},
         Favorite: {check(c) { return {viewed: c.id === 307}; }}
     };
     vm.runInNewContext(code, {window: {Lampa}, Lampa, XMLHttpRequest: XHR,
@@ -78,8 +82,7 @@ function app(options = {}) {
         assert.equal(month.results.length, 24);
         assert.ok(month.results.every(c => c.release_date >= '2026-01-01' &&
             c.release_date <= '2026-01-15'), 'Monthly preview contains old or future premieres');
-        assert.equal(month.title, options.feed ? 'Популярные премьеры этого месяца' :
-            'Премьеры этого месяца: популярны сейчас');
+        assert.equal(month.title, 'Сейчас популярны: релизы за месяц');
         const first = await user.list(1), second = await user.list(2), third = await user.list(3);
         assert.deepEqual(Array.from(first.results, c => c.id), Array.from(month.results, c => c.id));
         assert.equal(second.results.length, 24);
@@ -104,6 +107,42 @@ function app(options = {}) {
     assert.equal(short.results.length, 5, 'Scarcity widened the release window');
     assert.equal(short.total_pages, 1);
     assert.equal((await app({comedy: true}).main()).length, 0);
+    const mild = Array.from({length: 20}, (_, i) => movie(800 + i, '2026-01-06'));
+    const ratings = id => id >= 800 ? [{type: 'nice', counter: 4 + id % 5},
+        {type: 'think', counter: 30}] : [{type: id === 306 ? 'shit' : 'fire', counter: 50}];
+    for (const feed of [false, true]) {
+        // Old caches stored mild scores as null. The new policy must recheck them.
+        const oldCache = Object.fromEntries(mild.map(c => [String(c.id),
+            {at: new Date('2026-01-15T12:00:00Z').getTime(), value: null}]));
+        const user = app({onlyMonth: true, feed, reactions: ratings,
+            storage: new Map([['my_lampa_home_reaction_cache', oldCache]]),
+            catalog: invalid.concat(premieres.slice(0, 3), mild)});
+        const [row] = await user.main();
+        assert.equal(row.results.length, 10, 'Three strong premieres were not topped up to ten');
+        assert.ok(row.results.slice(0, 3).every(c => c.vlas_score >= 5.6));
+        assert.ok(row.results.slice(3).every(c => c.vlas_score >= 5 && c.vlas_score < 5.6));
+        assert.ok(row.results.every(c => c.release_date.startsWith('2026-01')));
+        assert.ok(!row.results.some(c => c.id === 306 || c.id === 305));
+        const scores = Array.from(row.results.slice(3), c => c.vlas_score);
+        assert.deepEqual(scores, scores.slice().sort((a, b) => b - a));
+        assert.equal((await user.list(1)).results.length, 10);
+        assert.deepEqual(Array.from((await user.main())[0].results, c => c.id),
+            Array.from(row.results, c => c.id), 'Cached mild scores changed the selection');
+    }
+    // Weak scores rejected in the weekly row remain eligible only for monthly top-up.
+    const isolated = app({weekly: premieres.slice(0, 3).concat(mild), reactions: ratings,
+        catalog: premieres.slice(0, 6).concat(mild)});
+    const isolatedRows = await isolated.main();
+    assert.equal(isolatedRows[0].results.length, 3);
+    assert.equal(isolatedRows[1].results.length, 10);
+    assert.equal(new Set(isolatedRows.flatMap(r => r.results.map(c => c.id))).size, 13);
+    const enough = app({onlyMonth: true, reactions: ratings, catalog: mild.concat(premieres)});
+    const [strong] = await enough.main();
+    assert.equal(strong.results.length, 24, 'Ten became a cap for strong premieres');
+    assert.ok(strong.results.every(c => c.vlas_score >= 5.6));
+    assert.ok((await enough.list(2)).results.every(c => c.vlas_score >= 5.6));
+    const tiny = app({onlyMonth: true, reactions: ratings, catalog: premieres.slice(0, 3).concat(mild.slice(0, 2))});
+    assert.equal((await tiny.main())[0].results.length, 5, 'Not enough valid films must not fabricate ten');
     // The next calendar month must invalidate an already opened More session.
     const rollover = app({onlyMonth: true, catalog: premieres.concat(
         Array.from({length: 40}, (_, i) => movie(1000 + i, '2026-02-01')))});

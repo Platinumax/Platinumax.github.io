@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.4 — strict current-calendar-month premieres.
+/* Vlas Home 5.3.5 — top up current-month premieres to ten with milder scores.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -53,7 +53,7 @@
 
     function rememberReaction(id, value) {
         var keys, i, now = new Date().getTime();
-        savedReactions[id] = { at: now, value: value,
+        savedReactions[id] = { at: now, value: value, version: 2,
             ttl: value ? REACTION_TTL : 20 * 60 * 1000 };
         if (saveTimer) return;
         saveTimer = setTimeout(function () {
@@ -72,7 +72,7 @@
         loadSaved();
         var key = String(id), cached = reactionCache[key];
         var saved = savedReactions[key];
-        if (saved && saved.at && new Date().getTime() - saved.at <
+        if (saved && saved.version === 2 && saved.at && new Date().getTime() - saved.at <
             (saved.ttl || REACTION_TTL)) {
             callback(saved.value);
             return;
@@ -149,7 +149,8 @@
             (counts.shit >= 20 && counts.shit / total >= 0.2))) return null;
         score = (10 * counts.fire + 8 * counts.nice + 5 * counts.think +
             2 * counts.bore + 20 * 5) / (total + 20);
-        if (score < 5.6 || positive <= negative) return null;
+        // Cache safe reactions down to 5.0; each row applies its own threshold.
+        if (score < 5.0 || positive <= negative) return null;
         return { score: score, total: total };
     }
 
@@ -203,8 +204,8 @@
         { id: 'week', title: 'Самые популярные за неделю',
           fallbackTitle: 'В тренде на этой неделе', feed: 'weekly',
           query: 'trending/movie/week' },
-        { id: 'month', title: 'Популярные премьеры этого месяца',
-          fallbackTitle: 'Премьеры этого месяца: популярны сейчас', feed: 'monthly',
+        { id: 'month', title: 'Сейчас популярны: релизы за месяц',
+          fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
           currentMonth: true,
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
@@ -449,6 +450,7 @@
             minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
             var cutoff = formatDate(minimumAge);
             var results = [];
+            var lowerRated = [];
             var repeats = [];
             var seen = {};
             var checked = 0;
@@ -481,6 +483,15 @@
                     results.sort(function (a, b) { return b.vlas_rank - a.vlas_rank; });
                 } else {
                     results.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
+                }
+                // Prefer all qualifying 5.6+ films. Use milder scores only to
+                // reach ten monthly premieres, never to replace stronger films.
+                if (config.currentMonth && results.length < 10) {
+                    lowerRated.sort(function (a, b) {
+                        return b.vlas_score - a.vlas_score || b.vlas_rank - a.vlas_rank;
+                    });
+                    for (i = 0; i < lowerRated.length && results.length < 10; i++)
+                        results.push(lowerRated[i]);
                 }
                 hasMore = results.length > TARGET;
                 for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
@@ -530,9 +541,11 @@
                         reactionFor(candidate.card.id, function (reaction) {
                             var copy;
                             if (finished) return;
-                            if (reaction) {
+                            if (reaction && reaction.score >= 5.6) {
                                 copy = ratedCard(candidate.card, reaction, candidate.position);
                                 (candidate.repeat ? repeats : results).push(copy);
+                            } else if (config.currentMonth && reaction && reaction.score >= 5.0) {
+                                lowerRated.push(ratedCard(candidate.card, reaction, candidate.position));
                             }
                             pending--;
                             if (!pending) {
@@ -673,7 +686,7 @@
                     (function (candidate) {
                         reactionFor(candidate.card.id, function (reaction) {
                             if (currentId !== requestId) return;
-                            if (reaction) {
+                            if (reaction && reaction.score >= 5.6) {
                                 var copy = ratedCard(candidate.card, reaction,
                                     candidate.position);
                                 approved.push(copy);
