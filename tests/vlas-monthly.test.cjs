@@ -119,21 +119,21 @@ function app(options = {}) {
             storage: new Map([['my_lampa_home_reaction_cache', oldCache]]),
             catalog: invalid.concat(premieres.slice(0, 3), mild)});
         const [row] = await user.main();
-        assert.equal(row.results.length, 3, 'Monthly row must not top up with weak weekly-style rejects');
-        assert.ok(row.results.every(c => c.vlas_score >= 5.6));
+        assert.equal(row.results.length, 23, 'Monthly row did not keep enough 30-day candidates');
+        assert.ok(row.results.slice(0, 3).every(c => c.vlas_score >= 5.6));
         assert.ok(row.results.every(c => c.release_date.startsWith('2026-01')));
         assert.ok(!row.results.some(c => c.id === 306 || c.id === 305));
-        assert.equal((await user.list(1)).results.length, 3);
+        assert.equal((await user.list(1)).results.length, 23);
         assert.deepEqual(Array.from((await user.main())[0].results, c => c.id),
             Array.from(row.results, c => c.id), 'Cached mild scores changed the selection');
     }
-    // Weak scores rejected in the weekly row are rejected in monthly too.
+    // Monthly keeps weak 30-day candidates after stronger weekly-style picks.
     const isolated = app({weekly: premieres.slice(0, 3).concat(mild), reactions: ratings,
         catalog: premieres.slice(0, 6).concat(mild)});
     const isolatedRows = await isolated.main();
     assert.equal(isolatedRows[0].results.length, 3);
-    assert.equal(isolatedRows[1].results.length, 3);
-    assert.equal(new Set(isolatedRows.flatMap(r => r.results.map(c => c.id))).size, 6);
+    assert.equal(isolatedRows[1].results.length, 23);
+    assert.equal(new Set(isolatedRows.flatMap(r => r.results.map(c => c.id))).size, 26);
     const enough = app({onlyMonth: true, reactions: ratings, catalog: mild.concat(premieres)});
     const [strong] = await enough.main();
     assert.equal(strong.results.length, 24, 'Ten became a cap for strong premieres');
@@ -143,7 +143,7 @@ function app(options = {}) {
         feedCatalog: invalid.concat(premieres.slice(0, 3)),
         catalog: invalid.concat(premieres.slice(0, 3), mild)});
     const [fedThenFilled] = await shortFeed.main();
-    assert.equal(fedThenFilled.results.length, 3, 'Short monthly feed should use weekly-style reaction rules');
+    assert.equal(fedThenFilled.results.length, 23, 'Short monthly feed did not continue with 30-day fillers');
     assert.ok(shortFeed.requests.some(r => r.url.startsWith('discover/')),
         'Short monthly feed never requested fallback discovery pages');
     assert.ok(fedThenFilled.results.every(c => c.release_date >= '2025-12-16' &&
@@ -153,9 +153,16 @@ function app(options = {}) {
     const filledWithoutCub = app({onlyMonth: true, reactions: scarceReactions,
         catalog: invalid.concat(premieres.slice(0, 3), noCub)});
     const [weakFilled] = await filledWithoutCub.main();
-    assert.equal(weakFilled.results.length, 3, 'Missing audience evidence must not fill the top row');
+    assert.equal(weakFilled.results.length, 23, 'Missing audience evidence should fill after verified candidates');
     assert.ok(weakFilled.results.slice(0, 3).every(c => c.vlas_score >= 5.6));
     assert.ok(!weakFilled.results.some(c => c.id === 306));
+    const manyNoCub = Array.from({length: 60}, (_, i) => movie(1200 + i, '2026-01-07'));
+    const wide = app({onlyMonth: true, reactions: id => id >= 1200 ? [] : ratings(id),
+        catalog: invalid.concat(premieres.slice(0, 3), manyNoCub)});
+    const [wideRow] = await wide.main();
+    assert.equal(wideRow.results.length, 24, 'Monthly preview did not reach a full row');
+    assert.ok(wideRow.total_pages > 1, 'Monthly row did not expose More');
+    assert.ok((await wide.list(2)).results.length > 0, 'Monthly More did not return continuation');
     // Screenshot regression: all nine reactions are negative, not an unknown rating.
     const badSamples = [
         [{type: 'shit', counter: 5}, {type: 'bore', counter: 4}],
@@ -177,22 +184,24 @@ function app(options = {}) {
             storage: new Map([['my_lampa_home_reaction_cache', previousCache]]),
             catalog: rejected.concat(premieres.slice(0, 3), mild)});
         const [row] = await user.main();
-        assert.equal(row.results.length, 3);
-        assert.ok(!row.results.some(c => c.id >= 1100), 'Negative or unverified premiere passed');
+        assert.ok(row.results.length >= 23);
+        assert.ok(!row.results.some(c => c.id === 1100 || c.id === 1105),
+            'Negative premiere passed');
         assert.ok(user.reacted.includes(1100), 'Old low-signal cache was not invalidated');
-        assert.ok(!(await user.list(1)).results.some(c => c.id >= 1100));
+        assert.ok(!(await user.list(1)).results.some(c => c.id === 1100 || c.id === 1105));
         // Put bad candidates after a full preview to exercise continuation too.
         const more = app({onlyMonth: true, feed, reactions: qualityReactions,
             catalog: premieres.slice(0, 40).concat(rejected, premieres.slice(40))});
         await more.main();
         const moreCards = (await more.list(2)).results;
         assert.equal(moreCards.length, 24);
-        assert.ok(!moreCards.some(c => c.id >= 1100), 'More bypassed audience validation');
+        assert.ok(!moreCards.some(c => c.id === 1100 || c.id === 1105),
+            'More bypassed audience validation');
     }
     assert.equal((await app({onlyMonth: true, cubUnavailable: true}).main()).length, 0,
         'CUB failure must not be treated as audience approval');
     const tiny = app({onlyMonth: true, reactions: ratings, catalog: premieres.slice(0, 3).concat(mild.slice(0, 2))});
-    assert.equal((await tiny.main())[0].results.length, 3, 'Not enough valid films must not fabricate ten');
+    assert.equal((await tiny.main())[0].results.length, 5, 'Not enough valid films must not fabricate ten');
     // The next day must invalidate an already opened rolling 30-day session.
     const rollover = app({onlyMonth: true, catalog: premieres.concat(
         Array.from({length: 40}, (_, i) => movie(1000 + i, '2026-02-01')))});
