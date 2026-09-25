@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.10 — keep monthly releases broad while blocking clear negatives.
+/* Vlas Home 5.3.11 — prefer quality monthly repeats over weak fillers.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -211,7 +211,7 @@
         { id: 'month', title: 'Сейчас популярны: релизы за месяц',
           fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
           releaseDays: 30, feedKeepsFilters: true, feedFallback: true,
-          fillWeak: true,
+          fillWeak: true, allowUsedAsRepeat: true, fillerVoteMin: 5.8,
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
@@ -468,8 +468,11 @@
         return !reaction.soft && reaction.score >= 5.6;
     }
 
-    function canFillWeak(reaction, config) {
+    function canFillWeak(card, reaction, config) {
+        var vote;
         if (!config.fillWeak || !reaction || reaction.blocked) return false;
+        vote = Number(card && card.vote_average) || 0;
+        if (vote && vote < (config.fillerVoteMin || 0)) return false;
         if (reaction.total >= 15 && reaction.negative > 0)
             return reaction.positive > reaction.negative &&
                 reaction.negative / reaction.total < 0.45;
@@ -559,11 +562,12 @@
                     if (!valid(card, fromFeed && !config.feedKeepsFilters ? {} : config,
                         cutoff, now.getFullYear(), filter)) continue;
                     id = String(card.id);
-                    if (seen[id] || (visibleState.count < 5 && used[id])) continue;
+                    if (seen[id] || (visibleState.count < 5 && used[id] &&
+                        !config.allowUsedAsRepeat)) continue;
                     if (hideViewed() && watched(card)) continue;
                     seen[id] = true;
-                    candidates.push({ card: card, repeat: (!config.feed && !!used[id]) ||
-                        !!recent[id],
+                    candidates.push({ card: card, repeat: (config.allowUsedAsRepeat &&
+                        !!used[id]) || (!config.feed && !!used[id]) || !!recent[id],
                         position: checked++ });
                     if (checked >= ROW_CANDIDATES) break;
                 }
@@ -578,7 +582,7 @@
                             if (approvedReaction(reaction, config)) {
                                 copy = ratedCard(candidate.card, reaction, candidate.position);
                                 (candidate.repeat ? repeats : results).push(copy);
-                            } else if (canFillWeak(reaction, config)) {
+                            } else if (canFillWeak(candidate.card, reaction, config)) {
                                 fillers.push(fillerCard(candidate.card, reaction,
                                     candidate.position));
                             }
@@ -735,7 +739,7 @@
                                 var copy = ratedCard(candidate.card, reaction,
                                     candidate.position);
                                 approved.push(copy);
-                            } else if (canFillWeak(reaction, config)) {
+                            } else if (canFillWeak(candidate.card, reaction, config)) {
                                 fillers.push(fillerCard(candidate.card, reaction,
                                     candidate.position));
                             }
