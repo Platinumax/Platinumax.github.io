@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.7 — fill monthly premieres to ten with cautious low-signal fallback.
+/* Vlas Home 5.3.8 — require verified audience approval for monthly premieres.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -53,7 +53,7 @@
 
     function rememberReaction(id, value) {
         var keys, i, now = new Date().getTime();
-        savedReactions[id] = { at: now, value: value, version: 3,
+        savedReactions[id] = { at: now, value: value, version: 4,
             ttl: value ? REACTION_TTL : 20 * 60 * 1000 };
         if (saveTimer) return;
         saveTimer = setTimeout(function () {
@@ -72,7 +72,7 @@
         loadSaved();
         var key = String(id), cached = reactionCache[key];
         var saved = savedReactions[key];
-        if (saved && saved.version === 3 && saved.at && new Date().getTime() - saved.at <
+        if (saved && saved.version === 4 && saved.at && new Date().getTime() - saved.at <
             (saved.ttl || REACTION_TTL)) {
             callback(saved.value);
             return;
@@ -143,16 +143,17 @@
         total = counts.fire + counts.nice + counts.think + counts.bore + counts.shit;
         positive = counts.fire + counts.nice;
         negative = counts.bore + counts.shit;
-        // A strong negative signal vetoes a movie regardless of its popularity.
-        if (total >= 30 && (negative / total >= 0.38 ||
-            (counts.shit >= 20 && counts.shit / total >= 0.2))) {
+        // Reject a small but clearly negative sample before classifying weak data.
+        if ((total >= 5 && negative > positive && negative / total >= 0.5) ||
+            (total >= 30 && (negative / total >= 0.38 ||
+            (counts.shit >= 20 && counts.shit / total >= 0.2)))) {
             return { blocked: true, total: total };
         }
         score = total ? (10 * counts.fire + 8 * counts.nice + 5 * counts.think +
             2 * counts.bore + 20 * 5) / (total + 20) : 0;
         if (total < 15) return { score: score, total: total, weak: true };
-        if (score >= 5.6 && positive > negative) return { score: score, total: total };
-        if (score >= 4.5) return { score: score, total: total, soft: true };
+        if (score >= 5.6 && positive > negative) return { score: score, total: total, positive: positive, negative: negative };
+        if (score >= 4.5) return { score: score, total: total, positive: positive, negative: negative, soft: true };
         return { blocked: true, total: total };
     }
 
@@ -443,14 +444,13 @@
         return copy;
     }
 
-    function fallbackCard(card, position) {
-        var copy = {}, field;
-        for (field in card) if (Object.prototype.hasOwnProperty.call(card, field)) {
-            copy[field] = card[field];
+    function approvedReaction(reaction, config) {
+        if (!reaction || reaction.blocked || reaction.weak || reaction.total < 15) return false;
+        if (config.currentMonth) {
+            return reaction.score >= 5 && reaction.positive > reaction.negative &&
+                reaction.negative / reaction.total < 0.38;
         }
-        copy.vlas_score = 0;
-        copy.vlas_rank = 1 - position / 400;
-        return copy;
+        return !reaction.soft && reaction.score >= 5.6;
     }
 
     function makeRow(source, config, params, used, visibleState, filter) {
@@ -463,7 +463,6 @@
             var cutoff = formatDate(minimumAge);
             var results = [];
             var lowerRated = [];
-            var unverifiedRated = [];
             var repeats = [];
             var seen = {};
             var checked = 0;
@@ -505,13 +504,6 @@
                     });
                     for (i = 0; i < lowerRated.length && results.length < 10; i++)
                         results.push(lowerRated[i]);
-                }
-                if (config.currentMonth && results.length < 10) {
-                    unverifiedRated.sort(function (a, b) {
-                        return b.vlas_rank - a.vlas_rank;
-                    });
-                    for (i = 0; i < unverifiedRated.length && results.length < 10; i++)
-                        results.push(unverifiedRated[i]);
                 }
                 hasMore = results.length > TARGET;
                 for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
@@ -561,16 +553,10 @@
                         reactionFor(candidate.card.id, function (reaction) {
                             var copy;
                             if (finished) return;
-                            if (reaction && !reaction.blocked && !reaction.weak &&
-                                !reaction.soft && reaction.score >= 5.6) {
+                            if (approvedReaction(reaction, config)) {
                                 copy = ratedCard(candidate.card, reaction, candidate.position);
-                                (candidate.repeat ? repeats : results).push(copy);
-                            } else if (config.currentMonth && reaction &&
-                                !reaction.blocked && !reaction.weak && reaction.score >= 4.5) {
-                                lowerRated.push(ratedCard(candidate.card, reaction, candidate.position));
-                            } else if (config.currentMonth &&
-                                (!reaction || (reaction.weak && !reaction.blocked))) {
-                                unverifiedRated.push(fallbackCard(candidate.card, candidate.position));
+                                if (config.currentMonth && reaction.score < 5.6) lowerRated.push(copy);
+                                else (candidate.repeat ? repeats : results).push(copy);
                             }
                             pending--;
                             if (!pending) {
@@ -592,8 +578,9 @@
                         // filter. Continue with the normal monthly source so the row
                         // can still reach the intended minimum of ten premieres.
                         if (config.currentMonth &&
-                            results.length + lowerRated.length + unverifiedRated.length < 10 &&
+                            results.length < TARGET + 1 &&
                             checked < ROW_CANDIDATES && pagesRead < ROW_PAGES) {
+                            usedFeed = false;
                             nextPage(); return;
                         }
                         exhausted = true;
@@ -721,7 +708,7 @@
                     (function (candidate) {
                         reactionFor(candidate.card.id, function (reaction) {
                             if (currentId !== requestId) return;
-                            if (reaction && reaction.score >= 5.6) {
+                            if (approvedReaction(reaction, config)) {
                                 var copy = ratedCard(candidate.card, reaction,
                                     candidate.position);
                                 approved.push(copy);

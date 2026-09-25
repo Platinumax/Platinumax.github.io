@@ -52,6 +52,7 @@ function app(options = {}) {
     const Lampa = {
         Api: {sources: {tmdb, cub: {reactionsGet(p, done) {
             reacted.push(Number(p.id));
+            if (options.cubUnavailable) { done(null); return; }
             done({result: options.reactions ? options.reactions(Number(p.id)) :
                 [{type: Number(p.id) === 306 ? 'shit' : 'fire', counter: 50}]});
         }}}},
@@ -155,10 +156,44 @@ function app(options = {}) {
     const filledWithoutCub = app({onlyMonth: true, reactions: scarceReactions,
         catalog: invalid.concat(premieres.slice(0, 3), noCub)});
     const [weakFilled] = await filledWithoutCub.main();
-    assert.equal(weakFilled.results.length, 10, 'Current-month row did not use low-signal fillers after verified candidates');
+    assert.equal(weakFilled.results.length, 3, 'Missing audience evidence must not fill the top row');
     assert.ok(weakFilled.results.slice(0, 3).every(c => c.vlas_score >= 5.6));
-    assert.ok(weakFilled.results.slice(3).every(c => c.vlas_score === 0));
     assert.ok(!weakFilled.results.some(c => c.id === 306));
+    // Screenshot regression: all nine reactions are negative, not an unknown rating.
+    const badSamples = [
+        [{type: 'shit', counter: 5}, {type: 'bore', counter: 4}],
+        [{type: 'fire', counter: 14}], // high score, insufficient evidence
+        [],
+        [{type: 'think', counter: 30}], // neutral is not audience approval
+        [{type: 'nice', counter: 15}, {type: 'bore', counter: 10}], // 40% negative
+        [{type: 'nice', counter: 10}, {type: 'bore', counter: 10}, {type: 'think', counter: 10}]
+    ];
+    const rejected = badSamples.map((_, i) => movie(1100 + i, '2026-01-07'));
+    rejected[0].title = 'After Impact';
+    const qualityReactions = id => id >= 1100 && id < 1106 ? badSamples[id - 1100] : ratings(id);
+    for (const feed of [false, true]) {
+        const previousCache = Object.fromEntries(rejected.map(c => [String(c.id), {
+            at: new Date('2026-01-15T12:00:00Z').getTime(), version: 3,
+            value: {score: 0, total: 9, weak: true}
+        }]));
+        const user = app({onlyMonth: true, feed, reactions: qualityReactions,
+            storage: new Map([['my_lampa_home_reaction_cache', previousCache]]),
+            catalog: rejected.concat(premieres.slice(0, 3), mild)});
+        const [row] = await user.main();
+        assert.equal(row.results.length, 10);
+        assert.ok(!row.results.some(c => c.id >= 1100), 'Negative or unverified premiere passed');
+        assert.ok(user.reacted.includes(1100), 'Old low-signal cache was not invalidated');
+        assert.ok(!(await user.list(1)).results.some(c => c.id >= 1100));
+        // Put bad candidates after a full preview to exercise continuation too.
+        const more = app({onlyMonth: true, feed, reactions: qualityReactions,
+            catalog: premieres.slice(0, 40).concat(rejected, premieres.slice(40))});
+        await more.main();
+        const moreCards = (await more.list(2)).results;
+        assert.equal(moreCards.length, 24);
+        assert.ok(!moreCards.some(c => c.id >= 1100), 'More bypassed audience validation');
+    }
+    assert.equal((await app({onlyMonth: true, cubUnavailable: true}).main()).length, 0,
+        'CUB failure must not be treated as audience approval');
     const tiny = app({onlyMonth: true, reactions: ratings, catalog: premieres.slice(0, 3).concat(mild.slice(0, 2))});
     assert.equal((await tiny.main())[0].results.length, 5, 'Not enough valid films must not fabricate ten');
     // The next calendar month must invalidate an already opened More session.
