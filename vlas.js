@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.3 — Filmix account access from Vlas settings.
+/* Vlas Home 5.3.4 — strict current-calendar-month premieres.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -203,9 +203,9 @@
         { id: 'week', title: 'Самые популярные за неделю',
           fallbackTitle: 'В тренде на этой неделе', feed: 'weekly',
           query: 'trending/movie/week' },
-        { id: 'month', title: 'Самые популярные за месяц',
-          fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
-          releaseDays: 30, releaseTypes: '3|4|5',
+        { id: 'month', title: 'Популярные премьеры этого месяца',
+          fallbackTitle: 'Премьеры этого месяца: популярны сейчас', feed: 'monthly',
+          currentMonth: true,
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
@@ -368,9 +368,8 @@
         if (config.beforeYear && Number(date.substr(0, 4)) >= config.beforeYear) return false;
         if (config.fromYears && Number(date.substr(0, 4)) < year - config.fromYears) return false;
         if (config.currentYear && Number(date.substr(0, 4)) !== year) return false;
-        // Discover validates dated release events. The card's release_date can
-        // still be its much earlier premiere, so do not reapply that window here.
-        if (config.releaseDays && !config.releaseTypes) {
+        if (config.currentMonth && date < cutoff.substr(0, 7) + '-01') return false;
+        if (config.releaseDays) {
             var first = new Date();
             first.setDate(first.getDate() - config.releaseDays);
             if (date < formatDate(first)) return false;
@@ -405,12 +404,9 @@
         if (config.releaseDays) {
             boundary = new Date();
             boundary.setDate(boundary.getDate() - config.releaseDays);
-            if (config.releaseTypes) {
-                url += '&release_date.gte=' + formatDate(boundary) +
-                    '&release_date.lte=' + cutoff +
-                    '&with_release_type=' + config.releaseTypes;
-            } else url += '&primary_release_date.gte=' + formatDate(boundary);
+            url += '&primary_release_date.gte=' + formatDate(boundary);
         }
+        if (config.currentMonth) url += '&primary_release_date.gte=' + cutoff.substr(0, 7) + '-01';
         if (config.olderThanDays) {
             boundary = new Date();
             boundary.setDate(boundary.getDate() - config.olderThanDays);
@@ -474,7 +470,10 @@
                 if (finished) return;
                 finished = true;
                 clearTimeout(timer);
-                if (filter.key !== genreFilter().key) { ready({ results: [] }); return; }
+                if (filter.key !== genreFilter().key || (config.currentMonth &&
+                    cutoff.substr(0, 7) !== formatDate(new Date()).substr(0, 7))) {
+                    ready({ results: [] }); return;
+                }
                 for (i = 0; i < repeats.length && results.length < TARGET + 1; i++) {
                     results.push(repeats[i]);
                 }
@@ -497,6 +496,7 @@
                     wrapped: wrapped, feedOffset: feedOffset,
                     rotatingPage: rotatingPage, config: config, params: params,
                     used: used, title: rowTitle, hasMore: hasMore,
+                    month: cutoff.substr(0, 7),
                     usedFeed: usedFeed
                 };
                 data = { results: preview, title: rowTitle, name: rowTitle,
@@ -509,8 +509,10 @@
                 var card, id, i, candidates = [], pending;
                 for (i = 0; i < input.length; i++) {
                     card = input[i];
-                    // Feed rows describe when viewers watched a film, regardless of release year.
-                    if (!valid(card, fromFeed ? {} : config, cutoff, now.getFullYear(), filter)) continue;
+                    // The monthly row always requires a premiere this calendar month,
+                    // including feed data. Other feed periods may contain older films.
+                    if (!valid(card, fromFeed && !config.currentMonth ? {} : config,
+                        cutoff, now.getFullYear(), filter)) continue;
                     id = String(card.id);
                     if (seen[id] || (visibleState.count < 5 && used[id])) continue;
                     if (hideViewed() && watched(card)) continue;
@@ -657,7 +659,7 @@
                 if (currentId !== requestId) return;
                 for (j = 0; j < input.length && checked < 700; j++) {
                     card = input[j];
-                    if (!valid(card, fromFeed ? {} : config,
+                    if (!valid(card, fromFeed && !config.currentMonth ? {} : config,
                         formatDate(minimumAge), now.getFullYear(), filter)) continue;
                     id = String(card.id);
                     if (seen[id]) continue;
@@ -775,7 +777,8 @@
             var page, config, i, filter = genreFilter();
             if (!match) return originalList.apply(source, arguments);
             // Rebuild stale previews; never send a Vlas URL to the native API.
-            if (!session || session.filter.key !== filter.key) {
+            if (!session || session.filter.key !== filter.key || (session.config.currentMonth &&
+                session.month !== formatDate(new Date()).substr(0, 7))) {
                 for (i = 0; i < COLLECTIONS.length; i++)
                     if (COLLECTIONS[i].id === match[1]) config = COLLECTIONS[i];
                 if (!config || !enabled(config.id) || !rowAllowed(config, filter)) {
@@ -791,7 +794,8 @@
             page = Math.max(1, Math.min(FULL_PAGES, parseInt(params.page, 10) || 1));
             if (!session.full) session.full = fullSession(source, session);
             session.full.ensure(page * FULL_PAGE, function (cards, exhausted) {
-                if (session.filter.key !== genreFilter().key) {
+                if (session.filter.key !== genreFilter().key || (session.config.currentMonth &&
+                    session.month !== formatDate(new Date()).substr(0, 7))) {
                     source.list(params, oncomplete, onerror);
                     return;
                 }
