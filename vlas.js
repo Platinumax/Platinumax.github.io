@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.2 — monthly theatrical, digital and physical releases.
+/* Vlas Home 5.3.3 — Filmix account access from Vlas settings.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -24,6 +24,7 @@
     var FEED = 'https://platinumax.github.io/data/rankings.json';
     var FILMIX_SCRIPT = 'https://lampaplugins.github.io/store/fx.js';
     var filmixLoading = false;
+    var filmixSettingsOpening = false;
     var filmixWaiters = [];
     var feedState = 0;
     var feedData = null;
@@ -891,6 +892,36 @@
         } catch (ignore) { finish(false); }
     }
 
+    function openFilmixSettings() {
+        if (filmixSettingsOpening) return;
+        if (!Lampa.Settings || typeof Lampa.Settings.create !== 'function') {
+            if (Lampa.Noty && Lampa.Noty.show)
+                Lampa.Noty.show('Настройки Filmix недоступны в этой версии Lampa. Обновите Lampa.');
+            return;
+        }
+        filmixSettingsOpening = true;
+        loadFilmix(function (ok) {
+            filmixSettingsOpening = false;
+            if (!ok) {
+                if (Lampa.Noty && Lampa.Noty.show)
+                    Lampa.Noty.show('Не удалось загрузить Filmix. Проверьте сеть и версию Lampa, затем повторите нажатие.');
+                return;
+            }
+            try {
+                // Some unrelated/partially loaded Filmix plugins set the global
+                // flag without registering FX settings. Do not open a blank page.
+                if (Lampa.SettingsApi.getComponent && !Lampa.SettingsApi.getComponent('fxapi'))
+                    throw new Error('Filmix settings are not registered');
+                Lampa.Settings.create('fxapi', { onBack: function () {
+                    Lampa.Settings.create('my_lampa_home');
+                } });
+            } catch (ignore) {
+                if (Lampa.Noty && Lampa.Noty.show)
+                    Lampa.Noty.show('Настройки Filmix не загрузились. Перезапустите Lampa и повторите нажатие.');
+            }
+        });
+    }
+
     function addFilmixButton() {
         if (!Lampa.Listener || !Lampa.Listener.follow) return;
         Lampa.Listener.follow('full', function (event) {
@@ -1032,6 +1063,13 @@
                 onChange: function (value) {
                     Lampa.Storage.set(KEY + 'filmix_button', value);
                 }
+            });
+            Lampa.SettingsApi.addParam({
+                component: 'my_lampa_home',
+                param: { name: KEY + 'filmix_settings', type: 'button' },
+                field: { name: 'Filmix — вход и настройки',
+                    description: 'Откройте «Добавить устройство на Filmix» и введите полученный код на https://filmix.my/consoles. Отдельная установка плагина не нужна.' },
+                onChange: openFilmixSettings
             });
             for (var i = 0; i < COLLECTIONS.length; i++) {
                 (function (row) {
