@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.5 — top up current-month premieres to ten with milder scores.
+/* Vlas Home 5.3.6 — continue monthly fallback after short feed rows.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -562,7 +562,17 @@
                 if (finished) return;
                 if (results.length >= TARGET + 1 || checked >= ROW_CANDIDATES ||
                     feedOffset >= feedCards.length) {
-                    if (feedOffset >= feedCards.length) exhausted = true;
+                    if (feedOffset >= feedCards.length) {
+                        // Rankings feeds can be short after the strict calendar-month
+                        // filter. Continue with the normal monthly source so the row
+                        // can still reach the intended minimum of ten premieres.
+                        if (config.currentMonth &&
+                            results.length + lowerRated.length < 10 &&
+                            checked < ROW_CANDIDATES && pagesRead < ROW_PAGES) {
+                            nextPage(); return;
+                        }
+                        exhausted = true;
+                    }
                     finish(); return;
                 }
                 batch = feedCards.slice(feedOffset, feedOffset + 20);
