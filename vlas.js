@@ -1,4 +1,4 @@
-/* Vlas Home 5.4.0 — thirteen rows, yearly top lists and audience reactions.
+/* Vlas Home 5.4.1 — show the actual selection source in row titles.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -538,7 +538,7 @@
             var feedOffset = 0;
             var usedFeed = false;
             var exhausted = false;
-            var rowTitle = config.fallbackTitle || config.title;
+            var rowTitle = (config.fallbackTitle || config.title) + ' · TMDB';
 
             function finish() {
                 var i, data, hasMore, preview;
@@ -626,7 +626,8 @@
                         position: checked++ });
                     if (checked >= ROW_CANDIDATES) break;
                 }
-                rowTitle = fromFeed ? config.title : (config.fallbackTitle || config.title);
+                rowTitle = (fromFeed ? config.title : (config.fallbackTitle || config.title)) +
+                    (fromFeed ? ' · Trakt' : ' · TMDB');
                 pending = candidates.length;
                 if (!pending) { next(); return; }
                 for (i = 0; i < candidates.length; i++) {
