@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.12 — current-year weekly releases and honest rolling rankings.
+/* Vlas Home 5.3.13 — current-year weekly releases and honest rolling rankings.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -224,10 +224,12 @@
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
           releaseDays: 180, olderThanDays: 31,
+          feedKeepsFilters: true, feedFallback: true,
           query: 'sort_by=popularity.desc' },
         { id: 'year', title: 'Самые популярные за год',
           fallbackTitle: 'Сейчас популярны: релизы 7–12 месяцев назад', feed: 'yearly',
           releaseDays: 365, olderThanDays: 181,
+          feedKeepsFilters: true, feedFallback: true,
           query: 'sort_by=popularity.desc' },
         { id: 'fresh', title: 'Новые фильмы, которые оценили зрители',
           currentYear: true, ageDays: 14,
