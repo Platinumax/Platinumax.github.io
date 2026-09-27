@@ -111,10 +111,10 @@ function checkSelected(cards) {
     user.genre(35, 'include'); user.genre(878, 'include');
     const [selected] = await user.main();
     checkSelected(selected.results);
-    const more = await user.list(selected.url, 2);
+    const more = await user.list(selected.url);
     checkSelected(more.results);
-    assert.equal(new Set(selected.results.concat(more.results).map(c => c.id)).size,
-        selected.results.length + more.results.length);
+    assert.equal(new Set(more.results.map(c => c.id)).size, more.results.length);
+    assert.equal(more.results.length, 100);
     assert.ok(user.reactions.every(id => ![16, 27, 99, 10770].some(g => fixtures[id - 1].genre_ids.includes(g))),
         'Excluded genres consumed reaction requests');
 
@@ -125,7 +125,7 @@ function checkSelected(cards) {
 
     user.genre(35, 'allow'); user.genre(878, 'allow'); user.genre(27, 'include');
     const rebuilt = await user.list(selected.url);
-    assert.equal(rebuilt.results.length, 24);
+    assert.equal(rebuilt.results.length, 100);
     assert.ok(rebuilt.results.every(c => c.genre_ids.includes(27)), 'Old More preview leaked after change');
     assert.equal(user.nativeCalls, 0);
 
@@ -177,7 +177,7 @@ function checkSelected(cards) {
     const [fedRow] = await fed.main();
     assert.equal(fed.requests.length, 0);
     assert.ok(fedRow.results.every(c => c.genre_ids.includes(27)));
-    assert.ok((await fed.list(fedRow.url, 2)).results.every(c => c.genre_ids.includes(27)));
+    assert.ok((await fed.list(fedRow.url)).results.every(c => c.genre_ids.includes(27)));
     const oldFeed = app({feed: {...feed, genre_policy: undefined}});
     oldFeed.genre(27, 'include');
     assert.ok((await oldFeed.main())[0].results.every(c => c.genre_ids.includes(27)));
@@ -191,7 +191,7 @@ function checkSelected(cards) {
     assert.equal((await pendingMain).length, 0, 'Stale async home was displayed');
     const [before] = await changing.main();
     changing.pause();
-    const pendingMore = changing.list(before.url, 3);
+    const pendingMore = changing.list(before.url);
     changing.genre(27, 'exclude'); changing.genre(35, 'include');
     changing.flush();
     const after = await pendingMore;
