@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.13 — current-year weekly releases and honest rolling rankings.
+/* Vlas Home 5.4.0 — thirteen rows, yearly top lists and audience reactions.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -189,13 +189,9 @@
                     if (data.version !== 1 || !data.rows || !isFinite(age) ||
                         age < -3600000 || age > 72 * 3600000) data = null;
                 } catch (ignore) { data = null; }
-                if (data && data.rows.yearly && data.rows.weekly &&
-                    !(data.row_sources && data.row_sources.yearly === 'daily_history_365')) {
-                    var weekIds = data.rows.weekly.map(function (card) { return String(card.id); }).sort();
-                    var yearIds = data.rows.yearly.map(function (card) { return String(card.id); }).sort();
-                    if (weekIds.length && JSON.stringify(weekIds) === JSON.stringify(yearIds))
-                        data.rows.yearly = [];
-                }
+                // Equal membership does not mean equal period statistics.
+                if (data && data.row_sources && data.row_sources.yearly === 'daily_history_365')
+                    data.rows.yearly = [];
                 done(data);
             };
             request.onerror = function () { done(null); };
@@ -214,22 +210,25 @@
     var COLLECTIONS = [
         { id: 'week', title: 'Самые популярные за неделю',
           fallbackTitle: 'В тренде на этой неделе', feed: 'weekly',
-          currentYear: true, feedKeepsFilters: true,
+          preferYear: true, moreYears: 2, feedKeepsFilters: true,
           query: 'trending/movie/week' },
-        { id: 'month', title: 'Сейчас популярны: релизы за месяц',
-          fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
-          releaseDays: 30, feedKeepsFilters: true, feedFallback: true,
-          fillWeak: true, allowUsedAsRepeat: true, fillerVoteMin: 5.8,
+        { id: 'month', title: 'Самые популярные за месяц',
+          fallbackTitle: 'Популярные фильмы', feed: 'monthly',
+          preferYear: true, moreYears: 2, feedKeepsFilters: true, excludeRows: ['week'],
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
-          fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
-          releaseDays: 180, olderThanDays: 31,
-          feedKeepsFilters: true, feedFallback: true,
+          fallbackTitle: 'Популярные фильмы последних 180 дней', feed: 'yearly',
+          releaseDays: 180, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month'],
           query: 'sort_by=popularity.desc' },
-        { id: 'year', title: 'Самые популярные за год',
-          fallbackTitle: 'Сейчас популярны: релизы 7–12 месяцев назад', feed: 'yearly',
-          releaseDays: 365, olderThanDays: 181,
-          feedKeepsFilters: true, feedFallback: true,
+        { id: 'year', title: 'Самые популярные за предыдущее полугодие',
+          fallbackTitle: 'Популярные фильмы последних 365 дней', feed: 'yearly',
+          releaseDays: 365, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month', 'halfyear'],
+          query: 'sort_by=popularity.desc' },
+        { id: 'topcurrent', title: 'Топ — текущий год',
+          feed: 'yearly', currentYear: true, feedKeepsFilters: true, maxItems: 50,
+          query: 'sort_by=popularity.desc' },
+        { id: 'topprevious', title: 'Топ — предыдущий год',
+          feed: 'yearly', previousYear: true, feedKeepsFilters: true, maxItems: 50,
           query: 'sort_by=popularity.desc' },
         { id: 'fresh', title: 'Новые фильмы, которые оценили зрители',
           currentYear: true, ageDays: 14,
@@ -384,6 +383,8 @@
         if (config.beforeYear && Number(date.substr(0, 4)) >= config.beforeYear) return false;
         if (config.fromYears && Number(date.substr(0, 4)) < year - config.fromYears) return false;
         if (config.currentYear && Number(date.substr(0, 4)) !== year) return false;
+        if (config.previousYear && Number(date.substr(0, 4)) !== year - 1) return false;
+        if (config.moreYears && Number(date.substr(0, 4)) < year - config.moreYears + 1) return false;
         if (config.currentMonth && date < cutoff.substr(0, 7) + '-01') return false;
         if (config.releaseDays) {
             var first = new Date();
@@ -408,7 +409,7 @@
     }
 
     function requestUrl(config, cutoff, year, filter) {
-        var upper = cutoff;
+        var upper = cutoff, lower = '';
         var boundary;
         var url = 'discover/movie?' + config.query;
         if (config.id === 'week') return config.query;
@@ -420,17 +421,19 @@
         if (config.releaseDays) {
             boundary = new Date();
             boundary.setDate(boundary.getDate() - config.releaseDays);
-            url += '&primary_release_date.gte=' + formatDate(boundary);
+            lower = formatDate(boundary);
         }
-        if (config.currentMonth) url += '&primary_release_date.gte=' + cutoff.substr(0, 7) + '-01';
+        if (config.currentMonth) lower = cutoff.substr(0, 7) + '-01';
         if (config.olderThanDays) {
             boundary = new Date();
             boundary.setDate(boundary.getDate() - config.olderThanDays);
             if (formatDate(boundary) < upper) upper = formatDate(boundary);
         }
-        if (config.fromYears) url += '&primary_release_date.gte=' + (year - config.fromYears) + '-01-01';
-        if (config.currentYear) url += '&primary_release_date.gte=' + year + '-01-01';
-        if (config.fromYear) url += '&primary_release_date.gte=' + config.fromYear + '-01-01';
+        if (config.fromYears) lower = (year - config.fromYears) + '-01-01';
+        if (config.currentYear && year + '-01-01' > lower) lower = year + '-01-01';
+        if (config.previousYear) { lower = (year - 1) + '-01-01'; upper = (year - 1) + '-12-31'; }
+        if (config.moreYears) lower = (year - config.moreYears + 1) + '-01-01';
+        if (config.fromYear) lower = config.fromYear + '-01-01';
         if (config.beforeYears) {
             boundary = (year - config.beforeYears) + '-12-31';
             if (boundary < upper) upper = boundary;
@@ -439,7 +442,8 @@
             boundary = (config.beforeYear - 1) + '-12-31';
             if (boundary < upper) upper = boundary;
         }
-        return url + '&primary_release_date.lte=' + upper + COMMON;
+        return url + (lower ? '&primary_release_date.gte=' + lower : '') +
+            '&primary_release_date.lte=' + upper + COMMON;
     }
 
     function ratedCard(card, reaction, position) {
@@ -489,9 +493,30 @@
         return true;
     }
 
+    function excludedByRows(id, config, used) {
+        return config.excludeRows && config.excludeRows.indexOf(used[id]) !== -1;
+    }
+
+    function previousRows(config, filter) {
+        var used = {}, i, j, session;
+        for (i = 0; i < (config.excludeRows || []).length; i++) {
+            session = rowSessions[config.excludeRows[i]];
+            if (!session || session.filter.key !== filter.key || session.date !== formatDate(new Date())) continue;
+            for (j = 0; j < session.cards.length; j++) used[String(session.cards[j].id)] = session.config.id;
+        }
+        return used;
+    }
+
     function makeRow(source, config, params, used, visibleState, filter) {
         return function (ready) {
+            var originalConfig = config, field, selection = {};
+            for (field in config) if (Object.prototype.hasOwnProperty.call(config, field)) selection[field] = config[field];
+            config = selection;
+            delete config.moreYears;
+            if (config.preferYear) config.currentYear = true;
             var finished = false;
+            var timedOut = false;
+            var wanted = config.maxItems ? ROW_CANDIDATES : TARGET + 1;
             var timer;
             var now = new Date();
             var minimumAge = new Date(now.getTime());
@@ -518,6 +543,14 @@
             function finish() {
                 var i, data, hasMore, preview;
                 if (finished) return;
+                if (!timedOut && config.preferYear && config.currentYear && results.length < TARGET) {
+                    config.currentYear = false;
+                    results = []; fillers = []; repeats = []; seen = {}; checked = 0;
+                    page = rotatingPage; pagesRead = 0; wrapped = false; feedOffset = 0;
+                    exhausted = false;
+                    if (usedFeed) nextFeed(); else nextPage();
+                    return;
+                }
                 finished = true;
                 clearTimeout(timer);
                 if (filter.key !== genreFilter().key || (config.currentMonth &&
@@ -539,11 +572,12 @@
                     for (i = 0; i < fillers.length && results.length < TARGET + 1; i++)
                         results.push(fillers[i]);
                 }
+                if (config.maxItems) results = results.slice(0, config.maxItems);
                 hasMore = results.length > TARGET;
                 for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
                 preview = results.slice(0, TARGET);
-                for (i = 0; i < preview.length; i++)
-                    used[String(preview[i].id)] = config.id;
+                if (['week', 'month', 'halfyear', 'year'].indexOf(config.id) !== -1)
+                    for (i = 0; i < preview.length; i++) used[String(preview[i].id)] = config.id;
                 if (preview.length) visibleState.count++;
                 saveWeekIds(config, week, preview, filter);
                 rowSessions[config.id] = {
@@ -551,16 +585,28 @@
                     cards: preview, extra: results.slice(TARGET), seen: seen,
                     checked: checked, page: page, pagesRead: pagesRead,
                     wrapped: wrapped, feedOffset: feedOffset,
-                    rotatingPage: rotatingPage, config: config, params: params,
+                    rotatingPage: rotatingPage, config: originalConfig, selection: config, params: params,
                     used: used, title: rowTitle, hasMore: hasMore,
                     cutoff: cutoff,
+                    date: formatDate(now),
                     month: cutoff.substr(0, 7),
                     usedFeed: usedFeed
                 };
                 data = { results: preview, title: rowTitle, name: rowTitle,
                     source: 'tmdb', url: 'vlas/' + config.id,
                     total_pages: hasMore ? FULL_PAGES : 1 };
-                ready(data);
+                if (originalConfig.moreYears && preview.length) {
+                    var session = rowSessions[config.id];
+                    session.full = fullSession(source, session);
+                    session.full.ensure(TARGET + 1, function (cards) {
+                        if (filter.key !== genreFilter().key) { ready({ results: [] }); return; }
+                        var previewIds = {}, j;
+                        for (j = 0; j < preview.length; j++) previewIds[String(preview[j].id)] = true;
+                        session.hasMore = cards.some(function (card) { return !previewIds[String(card.id)]; });
+                        data.total_pages = session.hasMore ? FULL_PAGES : 1;
+                        ready(data);
+                    });
+                } else ready(data);
             }
 
             function check(input, fromFeed, next) {
@@ -572,12 +618,11 @@
                     if (!valid(card, fromFeed && !config.feedKeepsFilters ? {} : config,
                         cutoff, now.getFullYear(), filter)) continue;
                     id = String(card.id);
-                    if (seen[id] || (visibleState.count < 5 && used[id] &&
-                        !config.allowUsedAsRepeat)) continue;
+                    if (seen[id] || excludedByRows(id, config, used)) continue;
                     if (hideViewed() && watched(card)) continue;
                     seen[id] = true;
                     candidates.push({ card: card, repeat: (config.allowUsedAsRepeat &&
-                        !!used[id]) || (!config.feed && !!used[id]) || !!recent[id],
+                        !!used[id]) || (!config.feed && config.id !== 'fresh' && !!used[id]) || !!recent[id],
                         position: checked++ });
                     if (checked >= ROW_CANDIDATES) break;
                 }
@@ -598,7 +643,7 @@
                             }
                             pending--;
                             if (!pending) {
-                                if (results.length >= TARGET + 1) finish();
+                                if (results.length >= wanted) finish();
                                 else next();
                             }
                         });
@@ -609,7 +654,7 @@
             function nextFeed() {
                 var batch;
                 if (finished) return;
-                if (results.length >= TARGET + 1 || checked >= ROW_CANDIDATES ||
+                if (results.length >= wanted || checked >= ROW_CANDIDATES ||
                     feedOffset >= feedCards.length) {
                     if (feedOffset >= feedCards.length) {
                         // Short prepared feeds continue through the normal row source
@@ -632,7 +677,7 @@
             function nextPage() {
                 var requestParams = {}, field, current;
                 if (finished) return;
-                if (results.length >= TARGET + 1 || checked >= ROW_CANDIDATES ||
+                if (results.length >= wanted || checked >= ROW_CANDIDATES ||
                     pagesRead >= ROW_PAGES || (wrapped && page >= rotatingPage)) {
                     finish(); return;
                 }
@@ -663,7 +708,7 @@
                 } catch (ignore) { finish(); }
             }
             // Bound cold-start waits; subsequent openings reuse the six-hour reaction cache.
-            timer = setTimeout(finish, 45000);
+            timer = setTimeout(function () { timedOut = true; finish(); }, 45000);
             if (config.feed) loadFeed(function (feed) {
                 var cards = feed && feed.rows[config.feed];
                 if (finished) return;
@@ -682,7 +727,8 @@
     function fullSession(source, session) {
         var cards = session.cards.concat(session.extra || []);
         var seen = session.seen || {};
-        var config = session.config;
+        var config = session.selection || session.config;
+        var maxItems = config.maxItems || (!config.feed ? 50 : FULL_PAGE * FULL_PAGES);
         var filter = session.filter;
         var now = new Date();
         var minimumAge = new Date(now.getTime());
@@ -697,9 +743,21 @@
         var busy = false;
         var waiting = [];
         minimumAge.setDate(minimumAge.getDate() - (config.ageDays || 0));
+        // Weekly/monthly More has its own two-calendar-year scope. Revisit
+        // the source so films excluded by the home year's filter can qualify.
+        if (session.config.moreYears) {
+            var fullConfig = {}, field;
+            for (field in config) if (Object.prototype.hasOwnProperty.call(config, field)) fullConfig[field] = config[field];
+            config = fullConfig;
+            config.currentYear = false;
+            config.moreYears = session.config.moreYears;
+            cards = []; seen = {}; checked = 0;
+            page = rotatingPage; pagesRead = 0; wrapped = false; feedOffset = 0;
+            exhausted = false;
+        }
 
         function ensure(wanted, callback) {
-            waiting.push({ wanted: wanted, callback: callback });
+            waiting.push({ wanted: Math.min(wanted, maxItems), callback: callback });
             if (busy) return;
             start();
         }
@@ -722,6 +780,8 @@
                 clearTimeout(timer);
                 requestId++;
                 busy = false;
+                cards = cards.slice(0, maxItems);
+                if (cards.length >= maxItems) exhausted = true;
                 waiting.shift().callback(cards, exhausted);
                 start();
             }
@@ -734,7 +794,7 @@
                     if (!valid(card, fromFeed && !config.feedKeepsFilters ? {} : config,
                         formatDate(minimumAge), now.getFullYear(), filter)) continue;
                     id = String(card.id);
-                    if (seen[id]) continue;
+                    if (seen[id] || excludedByRows(id, config, session.used)) continue;
                     if (hideViewed() && watched(card)) continue;
                     seen[id] = true;
                     candidates.push({ card: card, position: checked++ });
@@ -781,6 +841,7 @@
             function nextFeed(feed) {
                 var batch;
                 if (currentId !== requestId) return;
+                if (checked >= 700 || cards.length >= maxItems) { exhausted = true; finish(); return; }
                 if (!feed || !feed.rows || !feed.rows[config.feed]) {
                     exhausted = true; finish(); return;
                 }
@@ -863,38 +924,38 @@
             if (!session || session.filter.key !== filter.key ||
                 (session.config.currentMonth &&
                 session.month !== formatDate(new Date()).substr(0, 7)) ||
-                ((session.config.releaseDays || session.config.currentYear) &&
-                session.cutoff !== formatDate(new Date()))) {
+                session.date !== formatDate(new Date())) {
                 for (i = 0; i < COLLECTIONS.length; i++)
                     if (COLLECTIONS[i].id === match[1]) config = COLLECTIONS[i];
                 if (!config || !enabled(config.id) || !rowAllowed(config, filter)) {
                     if (onerror) onerror();
                     return;
                 }
-                makeRow(source, config, params || {}, {}, { count: 0 }, filter)(function (data) {
+                makeRow(source, config, params || {}, previousRows(config, filter), { count: 0 }, filter)(function (data) {
                     if (data.results.length) source.list(params, oncomplete, onerror);
                     else if (onerror) onerror();
                 });
                 return;
             }
-            page = Math.max(1, Math.min(FULL_PAGES, parseInt(params.page, 10) || 1));
+            var pageSize = session.config.maxItems || (!session.config.feed ? 50 : FULL_PAGE);
+            var pageLimit = pageSize === 50 ? 1 : FULL_PAGES;
+            page = Math.max(1, parseInt(params.page, 10) || 1);
+            if (page > pageLimit) { if (onerror) onerror(); return; }
             if (!session.full) session.full = fullSession(source, session);
-            session.full.ensure(page * FULL_PAGE, function (cards, exhausted) {
+            session.full.ensure(page * pageSize, function (cards, exhausted) {
                 if (session.filter.key !== genreFilter().key ||
                     (session.config.currentMonth &&
                     session.month !== formatDate(new Date()).substr(0, 7)) ||
-                    ((session.config.releaseDays || session.config.currentYear) &&
-                    session.cutoff !== formatDate(new Date()))) {
+                    session.date !== formatDate(new Date())) {
                     source.list(params, oncomplete, onerror);
                     return;
                 }
-                var pageCards = cards.slice((page - 1) * FULL_PAGE,
-                    page * FULL_PAGE);
+                var pageCards = cards.slice((page - 1) * pageSize, page * pageSize);
                 if (!pageCards.length) { onerror(); return; }
                 oncomplete({ results: pageCards, source: 'tmdb',
                     page: page, title: session.title,
                     total_pages: exhausted ?
-                        Math.max(1, Math.ceil(cards.length / FULL_PAGE)) : FULL_PAGES });
+                        Math.max(1, Math.ceil(cards.length / pageSize)) : pageLimit });
             });
         };
 

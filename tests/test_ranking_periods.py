@@ -47,21 +47,21 @@ class Periods(unittest.TestCase):
                 self.m.main()
             return json.loads(self.m.FEED.read_text()), json.loads(self.m.HISTORY.read_text())
 
-    def test_duplicate_membership_before_weekly_filter(self):
+    def test_same_movies_are_valid_in_different_periods_and_years(self):
         feed, _ = self.build([(4, 900), (3, 800), (2, 700), (1, 600)])
-        self.assertEqual([c['id'] for c in feed['rows']['weekly']], [1, 3])
-        self.assertEqual(feed['rows']['yearly'], [])
+        self.assertEqual([c['id'] for c in feed['rows']['weekly']], [1, 2, 3])
+        self.assertEqual([c['id'] for c in feed['rows']['yearly']], [3, 2, 1])
         self.assertEqual(feed['rows']['halfyear'], [])
-        self.assertEqual(feed['row_sources']['yearly'], 'tmdb_fallback')
+        self.assertEqual(feed['row_sources']['yearly'], 'trakt_yearly')
 
     def test_distinct_yearly_and_complete_history(self):
         feed, _ = self.build([(2, 80)])
         self.assertEqual(feed['row_sources']['yearly'], 'trakt_yearly')
         feed, history = self.build([(1, 90)], 366)
         self.assertEqual(len(history), 365)
-        self.assertEqual(feed['row_sources']['yearly'], 'daily_history_365')
+        self.assertEqual(feed['row_sources']['yearly'], 'trakt_yearly')
         self.assertEqual(feed['row_sources']['halfyear'], 'daily_history_180')
-        self.assertEqual(feed['rows']['yearly'][0]['trakt_watchers'], 1095)
+        self.assertEqual(feed['rows']['yearly'][0]['trakt_watchers'], 90)
 
     def test_temporary_http_errors_retry_but_auth_errors_do_not(self):
         from urllib.error import HTTPError
@@ -88,7 +88,7 @@ class Periods(unittest.TestCase):
         failure = HTTPError('https://api.trakt.tv', 500, 'error', {}, None)
         feed, history = self.build([(2, 80)], history_days=0,
                                    failures={'daily': failure, 'yearly': failure})
-        self.assertEqual([c['id'] for c in feed['rows']['weekly']], [1, 3])
+        self.assertEqual([c['id'] for c in feed['rows']['weekly']], [1, 2, 3])
         self.assertEqual(history, {})
         self.assertEqual(feed['row_sources']['yearly'], 'tmdb_fallback')
         self.assertEqual(feed['trakt_errors'], {'daily': 'http_500', 'yearly': 'http_500'})
@@ -98,9 +98,20 @@ class Periods(unittest.TestCase):
         with self.assertRaises(HTTPError):
             self.build([], failures={'daily': HTTPError('https://api.trakt.tv',401,'error',{},None)})
 
-    def test_complete_year_history_does_not_request_yearly_api(self):
-        feed, _ = self.build([], history_days=365, failures={'yearly': AssertionError('Unnecessary yearly API request')})
-        self.assertEqual(feed['row_sources']['yearly'], 'daily_history_365')
+    def test_complete_history_does_not_replace_agreed_yearly_source(self):
+        feed, _ = self.build([(2, 80)], history_days=365)
+        self.assertEqual(feed['row_sources']['yearly'], 'trakt_yearly')
+        self.assertEqual([c['id'] for c in feed['rows']['yearly']], [2])
+
+    def test_pagination_preserves_order_deduplicates_and_stops(self):
+        def item(i):
+            return {'movie': {'ids': {'tmdb': i}}, 'watcher_count': 100 - i}
+        with patch.object(self.m, 'get_json', side_effect=[[item(1), item(2)], [item(2), item(3)], []]) as request:
+            self.assertEqual(self.m.trakt('yearly', 2), [(1, 99), (2, 98), (3, 97)])
+            self.assertIn('page=3', request.call_args[0][0])
+        with patch.object(self.m, 'get_json', return_value=[item(1), item(2)]) as request:
+            self.assertEqual(len(self.m.trakt('yearly', 2)), 2)
+            self.assertEqual(request.call_count, 2)
 
 if __name__ == '__main__':
     unittest.main()

@@ -40,7 +40,7 @@ jobs:
           TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
           TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
         run: python scripts/build_rankings.py
-      - name: Verify generated weekly release years
+      - name: Verify feed dates and client release policy
         if: ${{ vars.RANKINGS_ENABLED == 'true' }}
         run: |
           python - <<'PY'
@@ -48,8 +48,9 @@ jobs:
           feed = json.load(open('data/rankings.json'))
           today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
           weekly = feed['rows']['weekly']
-          assert all(c['release_date'][:4] == today[:4] and c['release_date'] <= today for c in weekly)
-          print('Weekly current-year releases:', len(weekly))
+          assert feed['release_policy'] == 'client'
+          assert all(c['release_date'] <= today for row in feed['rows'].values() for c in row)
+          print('Weekly candidates across release years:', len(weekly))
           print('Row sources:', feed['row_sources'])
           PY
       - name: Publish updated data

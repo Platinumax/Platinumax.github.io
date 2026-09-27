@@ -2,7 +2,7 @@ name: Validate ranking periods
 on:
   pull_request:
   push:
-    branches: [fix/vlas-ranking-periods, fix/trakt-request-failure]
+    branches: [fix/vlas-ranking-periods, fix/trakt-request-failure, feat/vlas-agreed-selection]
 permissions:
   contents: read
 jobs:
@@ -33,8 +33,9 @@ jobs:
           today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
           weekly = feed['rows']['weekly']
           assert weekly or feed['row_sources']['weekly'] == 'tmdb_fallback', 'Empty weekly feed without explicit fallback'
-          assert all(c['release_date'][:4] == today[:4] and c['release_date'] <= today for c in weekly)
-          print('Verified weekly current-year releases:', len(weekly))
+          assert feed['release_policy'] == 'client'
+          assert all(c['release_date'] <= today for row in feed['rows'].values() for c in row)
+          print('Verified weekly candidates across release years:', len(weekly))
           print('Row sources:', feed['row_sources'])
           PY
       - uses: actions/upload-artifact@v4
