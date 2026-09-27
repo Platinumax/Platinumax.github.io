@@ -28,7 +28,7 @@ class Periods(unittest.TestCase):
             history[(self.m.TODAY-dt.timedelta(days=17)).isoformat()] = {}
             self.assertEqual(self.m.roll_history(history, window), [])
 
-    def build(self, yearly, history_days=1, daily=None):
+    def build(self, yearly, history_days=1, daily=None, failures=None):
         with tempfile.TemporaryDirectory() as directory:
             self.m.DATA = Path(directory)
             self.m.HISTORY = self.m.DATA/'history.json'
@@ -39,7 +39,11 @@ class Periods(unittest.TestCase):
             dates = {1: '2026-01-01', 2: '2025-12-31', 3: '2026-09-27', 4: '2026-09-28'}
             def details(i):
                 return {'id': i, 'title': 'Film', 'poster_path': '/p', 'release_date': dates[i]}
-            with patch.object(self.m, 'trakt', side_effect=lambda period, *args: raw[period]), patch.object(self.m, 'movie_details', side_effect=details):
+            def fetch(period, *args):
+                if failures and period in failures:
+                    raise failures[period]
+                return raw[period]
+            with patch.object(self.m, 'trakt', side_effect=fetch), patch.object(self.m, 'movie_details', side_effect=details):
                 self.m.main()
             return json.loads(self.m.FEED.read_text()), json.loads(self.m.HISTORY.read_text())
 
@@ -72,9 +76,31 @@ class Periods(unittest.TestCase):
                     self.m.get_json('https://example.test', {})
                 self.assertEqual(request.call_count, 1 if code == 401 else 3)
 
-    def test_empty_daily_fails(self):
-        with self.assertRaises(ValueError):
-            self.build([], daily=[])
+    def test_empty_daily_preserves_existing_snapshot(self):
+        _, history = self.build([], daily=[])
+        self.assertEqual(history, self.history(1))
+        feed, history = self.build([], history_days=0, daily=[])
+        self.assertEqual(history, {})
+        self.assertEqual(feed['trakt_errors']['daily'], 'empty_response')
+
+    def test_outages_isolated_and_failed_day_not_fabricated(self):
+        from urllib.error import HTTPError
+        failure = HTTPError('https://api.trakt.tv', 500, 'error', {}, None)
+        feed, history = self.build([(2, 80)], history_days=0,
+                                   failures={'daily': failure, 'yearly': failure})
+        self.assertEqual([c['id'] for c in feed['rows']['weekly']], [1, 3])
+        self.assertEqual(history, {})
+        self.assertEqual(feed['row_sources']['yearly'], 'tmdb_fallback')
+        self.assertEqual(feed['trakt_errors'], {'daily': 'http_500', 'yearly': 'http_500'})
+        feed, _ = self.build([], failures={p: failure for p in ('daily','weekly','monthly','yearly')})
+        self.assertTrue(all(not row for row in feed['rows'].values()))
+        self.assertEqual(set(feed['row_sources'].values()), {'tmdb_fallback'})
+        with self.assertRaises(HTTPError):
+            self.build([], failures={'daily': HTTPError('https://api.trakt.tv',401,'error',{},None)})
+
+    def test_complete_year_history_does_not_request_yearly_api(self):
+        feed, _ = self.build([], history_days=365, failures={'yearly': AssertionError('Unnecessary yearly API request')})
+        self.assertEqual(feed['row_sources']['yearly'], 'daily_history_365')
 
 if __name__ == '__main__':
     unittest.main()

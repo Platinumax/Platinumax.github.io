@@ -2,7 +2,7 @@ name: Validate ranking periods
 on:
   pull_request:
   push:
-    branches: [fix/vlas-ranking-periods]
+    branches: [fix/vlas-ranking-periods, fix/trakt-request-failure]
 permissions:
   contents: read
 jobs:
@@ -32,7 +32,7 @@ jobs:
           feed = json.load(open('data/rankings.json'))
           today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
           weekly = feed['rows']['weekly']
-          assert weekly, 'Live weekly feed unexpectedly empty'
+          assert weekly or feed['row_sources']['weekly'] == 'tmdb_fallback', 'Empty weekly feed without explicit fallback'
           assert all(c['release_date'][:4] == today[:4] and c['release_date'] <= today for c in weekly)
           print('Verified weekly current-year releases:', len(weekly))
           print('Row sources:', feed['row_sources'])
