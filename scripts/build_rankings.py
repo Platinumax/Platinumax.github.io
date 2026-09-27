@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import urllib.request
 import urllib.error
+from urllib.parse import urlsplit
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -24,14 +25,17 @@ TMDB_TOKEN = os.environ["TMDB_API_TOKEN"]
 
 def get_json(url, headers):
     req = urllib.request.Request(url, headers=headers)
+    endpoint = urlsplit(url).netloc + urlsplit(url).path
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=25) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
+            print("API {}: HTTP {} (attempt {}/3)".format(endpoint, error.code, attempt + 1), flush=True)
             if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
                 raise
         except (urllib.error.URLError, TimeoutError):
+            print("API {}: network error (attempt {}/3)".format(endpoint, attempt + 1), flush=True)
             if attempt == 2:
                 raise
         time.sleep(2 ** (attempt + 1))
@@ -39,6 +43,7 @@ def get_json(url, headers):
 
 def trakt(period, limit=200):
     url = "https://api.trakt.tv/movies/watched/{}?page=1&limit={}".format(period, limit)
+    print("Trakt {}: requesting {} candidates".format(period, limit), flush=True)
     payload = get_json(url, {
         "trakt-api-key": TRAKT_KEY,
         "trakt-api-version": "2",
@@ -52,6 +57,7 @@ def trakt(period, limit=200):
         watchers = item.get("watcher_count")
         if isinstance(tmdb_id, int) and isinstance(watchers, int) and watchers > 0:
             movies.append((tmdb_id, watchers))
+    print("Trakt {}: received {} candidates".format(period, len(movies)), flush=True)
     return movies
 
 
@@ -108,22 +114,42 @@ def main():
     except FileNotFoundError:
         history = {}
 
-    raw = {period: trakt(period) for period in ("weekly", "monthly", "yearly")}
-    daily = trakt("daily", 250)
-    if not daily:
-        raise ValueError("Empty daily snapshot; refusing to publish incomplete history")
-    history[TODAY.isoformat()] = {str(tmdb_id): count for tmdb_id, count in daily}
+    errors = {}
+
+    def fetch_period(period, limit=200):
+        # Outages select an explicitly labelled client fallback, never stale data.
+        # Authentication, malformed payloads and programming errors still fail.
+        try:
+            movies = trakt(period, limit)
+        except urllib.error.HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504):
+                raise
+            errors[period] = "http_{}".format(error.code)
+            movies = []
+        except (urllib.error.URLError, TimeoutError):
+            errors[period] = "network_error"
+            movies = []
+        if not movies:
+            errors.setdefault(period, "empty_response")
+            print("Trakt {} unavailable: {}".format(period, errors[period]), flush=True)
+        return movies
+
+    daily = fetch_period("daily", 250)
+    if daily:
+        history[TODAY.isoformat()] = {str(tmdb_id): count for tmdb_id, count in daily}
+    # A failed daily fetch preserves existing snapshots; it does not invent a day.
     history = {key: value for key, value in history.items()
                if (TODAY - dt.timedelta(days=364)).isoformat() <= key <= TODAY.isoformat()}
+    raw = {period: fetch_period(period) for period in ("weekly", "monthly")}
     raw["halfyear"] = roll_history(history, 180)
     yearly = roll_history(history, 365)
-    duplicate_year = bool(raw["weekly"]) and {i for i, _ in raw["yearly"]} == {i for i, _ in raw["weekly"]}
-    sources = {"weekly": "trakt_weekly", "monthly": "trakt_monthly",
-               "halfyear": "daily_history_180" if raw["halfyear"] else "tmdb_fallback",
-               "yearly": "daily_history_365" if yearly else "trakt_yearly"}
-    if yearly:
-        raw["yearly"] = yearly
-    elif duplicate_year or not raw["yearly"]:
+    raw["yearly"] = yearly or fetch_period("yearly")
+    duplicate_year = not yearly and bool(raw["weekly"]) and {i for i, _ in raw["yearly"]} == {i for i, _ in raw["weekly"]}
+    sources = {period: "trakt_" + period if raw[period] else "tmdb_fallback"
+               for period in ("weekly", "monthly")}
+    sources["halfyear"] = "daily_history_180" if raw["halfyear"] else "tmdb_fallback"
+    sources["yearly"] = "daily_history_365" if yearly else "trakt_yearly"
+    if duplicate_year or not raw["yearly"]:
         raw["yearly"] = []
         sources["yearly"] = "tmdb_fallback"
 
@@ -151,9 +177,10 @@ def main():
               "generated_at_epoch": int(now.timestamp()),
               "sources": ["Trakt popularity", "TMDB metadata", "CUB reactions in Lampa"],
               "row_sources": sources, "weekly_release_year": TODAY.year,
-              "yearly_duplicates_weekly": duplicate_year, "rows": rows}
+              "yearly_duplicates_weekly": duplicate_year, "trakt_errors": errors, "rows": rows}
     HISTORY.write_text(json.dumps(history, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     FEED.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
+    print("Trakt availability:", errors or "all requested periods available")
     print("Built rows:", {name: len(items) for name, items in rows.items()})
 
 
