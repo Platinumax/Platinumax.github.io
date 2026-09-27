@@ -59,6 +59,19 @@ class Periods(unittest.TestCase):
         self.assertEqual(feed['row_sources']['halfyear'], 'daily_history_180')
         self.assertEqual(feed['rows']['yearly'][0]['trakt_watchers'], 1095)
 
+    def test_temporary_http_errors_retry_but_auth_errors_do_not(self):
+        from urllib.error import HTTPError
+        from io import BytesIO
+        transient = HTTPError('https://example.test', 500, 'temporary', {}, None)
+        with patch.object(self.m.urllib.request, 'urlopen', side_effect=[transient, BytesIO(b'[]')]) as request, patch.object(self.m.time, 'sleep'):
+            self.assertEqual(self.m.get_json('https://example.test', {}), [])
+            self.assertEqual(request.call_count, 2)
+        for code in (401, 500):
+            with patch.object(self.m.urllib.request, 'urlopen', side_effect=HTTPError('https://example.test', code, 'error', {}, None)) as request, patch.object(self.m.time, 'sleep'):
+                with self.assertRaises(HTTPError):
+                    self.m.get_json('https://example.test', {})
+                self.assertEqual(request.call_count, 1 if code == 401 else 3)
+
     def test_empty_daily_fails(self):
         with self.assertRaises(ValueError):
             self.build([], daily=[])

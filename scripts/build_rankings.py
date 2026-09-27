@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import urllib.request
+import urllib.error
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,8 +24,17 @@ TMDB_TOKEN = os.environ["TMDB_API_TOKEN"]
 
 def get_json(url, headers):
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=25) as response:
-        return json.load(response)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=25) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 2:
+                raise
+        time.sleep(2 ** (attempt + 1))
 
 
 def trakt(period, limit=200):
