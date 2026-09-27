@@ -17,7 +17,7 @@ class FeedGenres(unittest.TestCase):
             spec.loader.exec_module(module)
         genres = [16, 27, 99, 10770, 35]
         movies = {i + 1: {"id": i + 1, "title": "Film", "poster_path": "/p.jpg",
-                          "release_date": "2020-01-01", "genre_ids": [genre], "adult": False}
+                          "release_date": str(module.TODAY.year) + "-01-01", "genre_ids": [genre], "adult": False}
                   for i, genre in enumerate(genres)}
         movies[6] = dict(movies[1], id=6, adult=True)
         movies[7] = dict(movies[1], id=7, release_date="2999-01-01")
@@ -30,8 +30,9 @@ class FeedGenres(unittest.TestCase):
                     patch.object(module, "movie_details", side_effect=movies.__getitem__):
                 module.main()
             feed = json.loads(module.FEED.read_text())
+        self.assertEqual(feed["rows"]["yearly"], [])
         self.assertEqual(feed["genre_policy"], "all")
-        for period in ("weekly", "monthly", "yearly"):
+        for period in ("weekly", "monthly"):
             self.assertEqual([item["id"] for item in feed["rows"][period]], [1, 2, 3, 4, 5])
 
 

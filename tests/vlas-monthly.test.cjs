@@ -45,7 +45,7 @@ function app(options = {}) {
             this.status = options.feed ? 200 : 404; this.readyState = 4;
             this.responseText = JSON.stringify({version: 1, genre_policy: 'all',
                 generated_at_epoch: Clock.now() / 1000,
-                rows: {weekly: weekCatalog, monthly: options.feedCatalog || catalog}});
+                rows: options.feedRows || {weekly: weekCatalog, monthly: options.feedCatalog || catalog}});
             this.onreadystatechange();
         }
     }
@@ -58,6 +58,7 @@ function app(options = {}) {
         }}}},
         Storage: {get(key, fallback) {
             if (storage.has(key)) return storage.get(key);
+            if (options.onlyPeriod && ['week', 'month', 'halfyear', 'year'].some(id => key === 'my_lampa_home_' + id)) return key === 'my_lampa_home_' + options.onlyPeriod;
             if (key === 'my_lampa_home_week') return !options.onlyMonth;
             if (key === 'my_lampa_home_month') return true;
             if (key === 'my_lampa_home_genre_35' && options.comedy) return 'include';
@@ -71,11 +72,45 @@ function app(options = {}) {
         Date: Clock, Math, JSON, Object, isFinite, clearTimeout,
         setTimeout(fn, ms) { const t = setTimeout(fn, ms); t.unref(); return t; }});
     return {requests, reacted, setDate(date) { now = date; },
+        weekList: page => new Promise(resolve => tmdb.list({url: 'vlas/week', page}, resolve, () => resolve({results: []}))),
         main: () => new Promise(resolve => tmdb.main({}, resolve, () => resolve([]))),
         list: page => new Promise(resolve => tmdb.list({url: 'vlas/month', page},
             resolve, () => resolve({results: []})))};
 }
 (async () => {
+    for (const period of ['year', 'halfyear']) {
+        const now = '2026-09-27T12:00:00Z';
+        const dated = days => new Date(new Date(now).getTime() - days * 86400000).toISOString().slice(0, 10);
+        const lower = period === 'year' ? 181 : 31, upper = period === 'year' ? 365 : 180;
+        const catalog = [movie(3000, dated(lower)), movie(3001, dated(upper)),
+            movie(3002, dated(lower - 1)), movie(3003, dated(upper + 1))];
+        const duplicate = [movie(4000, '2026-01-01')];
+        const user = app({now, onlyPeriod: period, feed: true, leaky: true, catalog,
+            feedRows: {weekly: duplicate, yearly: duplicate, halfyear: []}});
+        const [row] = await user.main();
+        assert.deepEqual(Array.from(row.results, c => c.id), [3000, 3001]);
+        assert.ok(row.title.startsWith('Сейчас популярны:'));
+        assert.ok(user.requests[0].url.includes('primary_release_date.lte=' + dated(lower)));
+        assert.ok(user.requests[0].url.includes('primary_release_date.gte=' + dated(upper)));
+    }
+    // Weekly applies current calendar year before CUB, in feeds and trending,
+    // preserves source order, and validates continuation and New Year rollover.
+    for (const feed of [false, true]) {
+        const current = Array.from({length: 70}, (_, i) => movie(2000 + i, '2026-01-01'));
+        const bad = [movie(2100, '2025-12-31'), movie(2101, '2027-01-01'), movie(2102, '')];
+        const user = app({feed, weekly: bad.concat(current), catalog: [],
+            reactions: id => [{type: id === 2001 ? 'shit' : 'fire', counter: 50}]});
+        const [row] = await user.main();
+        assert.deepEqual(Array.from(row.results, c => c.id), current.filter(c => c.id !== 2001).slice(0, 24).map(c => c.id));
+        assert.ok(!user.reacted.some(id => id >= 2100));
+        const more = await user.weekList(2);
+        assert.equal(more.results.length, 24);
+        assert.ok(more.results.every(c => c.release_date.startsWith('2026-')));
+        user.setDate('2027-01-02T12:00:00Z');
+        const renewed = await user.weekList(1);
+        assert.ok(renewed.results.every(c => c.release_date.startsWith('2027-')));
+    }
+
     for (const options of [{}, {leaky: true}, {feed: true}]) {
         const user = app(options);
         const [week, month] = await user.main();

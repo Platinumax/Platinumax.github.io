@@ -1,4 +1,4 @@
-/* Vlas Home 5.3.11 — prefer quality monthly repeats over weak fillers.
+/* Vlas Home 5.3.12 — current-year weekly releases and honest rolling rankings.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -189,6 +189,13 @@
                     if (data.version !== 1 || !data.rows || !isFinite(age) ||
                         age < -3600000 || age > 72 * 3600000) data = null;
                 } catch (ignore) { data = null; }
+                if (data && data.rows.yearly && data.rows.weekly &&
+                    !(data.row_sources && data.row_sources.yearly === 'daily_history_365')) {
+                    var weekIds = data.rows.weekly.map(function (card) { return String(card.id); }).sort();
+                    var yearIds = data.rows.yearly.map(function (card) { return String(card.id); }).sort();
+                    if (weekIds.length && JSON.stringify(weekIds) === JSON.stringify(yearIds))
+                        data.rows.yearly = [];
+                }
                 done(data);
             };
             request.onerror = function () { done(null); };
@@ -207,6 +214,7 @@
     var COLLECTIONS = [
         { id: 'week', title: 'Самые популярные за неделю',
           fallbackTitle: 'В тренде на этой неделе', feed: 'weekly',
+          currentYear: true, feedKeepsFilters: true,
           query: 'trending/movie/week' },
         { id: 'month', title: 'Сейчас популярны: релизы за месяц',
           fallbackTitle: 'Сейчас популярны: релизы за месяц', feed: 'monthly',
@@ -215,11 +223,11 @@
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Сейчас популярны: релизы 2–6 месяцев назад', feed: 'halfyear',
-          releaseDays: 180, olderThanDays: 30,
+          releaseDays: 180, olderThanDays: 31,
           query: 'sort_by=popularity.desc' },
         { id: 'year', title: 'Самые популярные за год',
           fallbackTitle: 'Сейчас популярны: релизы 7–12 месяцев назад', feed: 'yearly',
-          releaseDays: 365, olderThanDays: 180,
+          releaseDays: 365, olderThanDays: 181,
           query: 'sort_by=popularity.desc' },
         { id: 'fresh', title: 'Новые фильмы, которые оценили зрители',
           currentYear: true, ageDays: 14,
@@ -853,7 +861,7 @@
             if (!session || session.filter.key !== filter.key ||
                 (session.config.currentMonth &&
                 session.month !== formatDate(new Date()).substr(0, 7)) ||
-                (session.config.releaseDays &&
+                ((session.config.releaseDays || session.config.currentYear) &&
                 session.cutoff !== formatDate(new Date()))) {
                 for (i = 0; i < COLLECTIONS.length; i++)
                     if (COLLECTIONS[i].id === match[1]) config = COLLECTIONS[i];
@@ -873,7 +881,7 @@
                 if (session.filter.key !== genreFilter().key ||
                     (session.config.currentMonth &&
                     session.month !== formatDate(new Date()).substr(0, 7)) ||
-                    (session.config.releaseDays &&
+                    ((session.config.releaseDays || session.config.currentYear) &&
                     session.cutoff !== formatDate(new Date()))) {
                     source.list(params, oncomplete, onerror);
                     return;

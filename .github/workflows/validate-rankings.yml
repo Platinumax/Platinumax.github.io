@@ -1,0 +1,44 @@
+name: Validate ranking periods
+on:
+  pull_request:
+  push:
+    branches: [fix/vlas-ranking-periods]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Regression tests
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py'
+          node --test tests/*.test.cjs
+      - name: Build live feed without publishing
+        if: github.event_name == 'push' && vars.RANKINGS_ENABLED == 'true'
+        env:
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
+        run: |
+          python scripts/build_rankings.py
+          python - <<'PY'
+          import datetime, json
+          feed = json.load(open('data/rankings.json'))
+          today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+          weekly = feed['rows']['weekly']
+          assert weekly, 'Live weekly feed unexpectedly empty'
+          assert all(c['release_date'][:4] == today[:4] and c['release_date'] <= today for c in weekly)
+          print('Verified weekly current-year releases:', len(weekly))
+          print('Row sources:', feed['row_sources'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && vars.RANKINGS_ENABLED == 'true'
+        with:
+          name: verified-rankings
+          path: data/rankings.json
