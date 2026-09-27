@@ -1,4 +1,4 @@
-/* Vlas Home 5.4.1 — show the actual selection source in row titles.
+/* Vlas Home 5.4.2 — up to 100 qualifying movies in every More view.
  * ES5 syntax for older webOS browsers. Trakt data is prepared on GitHub Pages.
  * TMDB supplies movie metadata only; visible scores come from Lampa reactions.
  */
@@ -39,8 +39,7 @@
     var TARGET = 24;
     var ROW_CANDIDATES = 240;
     var ROW_PAGES = 12;
-    var FULL_PAGE = 24;
-    var FULL_PAGES = 6;
+    var MORE_LIMIT = 100;
     var ROTATION_WINDOWS = 6;
     var rowSessions = {};
 
@@ -225,10 +224,10 @@
           releaseDays: 365, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month', 'halfyear'],
           query: 'sort_by=popularity.desc' },
         { id: 'topcurrent', title: 'Топ — текущий год',
-          feed: 'yearly', currentYear: true, feedKeepsFilters: true, maxItems: 50,
+          feed: 'yearly', currentYear: true, feedKeepsFilters: true, maxItems: MORE_LIMIT,
           query: 'sort_by=popularity.desc' },
         { id: 'topprevious', title: 'Топ — предыдущий год',
-          feed: 'yearly', previousYear: true, feedKeepsFilters: true, maxItems: 50,
+          feed: 'yearly', previousYear: true, feedKeepsFilters: true, maxItems: MORE_LIMIT,
           query: 'sort_by=popularity.desc' },
         { id: 'fresh', title: 'Новые фильмы, которые оценили зрители',
           currentYear: true, ageDays: 14,
@@ -594,7 +593,7 @@
                 };
                 data = { results: preview, title: rowTitle, name: rowTitle,
                     source: 'tmdb', url: 'vlas/' + config.id,
-                    total_pages: hasMore ? FULL_PAGES : 1 };
+                    total_pages: hasMore ? 2 : 1 };
                 if (originalConfig.moreYears && preview.length) {
                     var session = rowSessions[config.id];
                     session.full = fullSession(source, session);
@@ -603,7 +602,7 @@
                         var previewIds = {}, j;
                         for (j = 0; j < preview.length; j++) previewIds[String(preview[j].id)] = true;
                         session.hasMore = cards.some(function (card) { return !previewIds[String(card.id)]; });
-                        data.total_pages = session.hasMore ? FULL_PAGES : 1;
+                        data.total_pages = session.hasMore ? 2 : 1;
                         ready(data);
                     });
                 } else ready(data);
@@ -729,7 +728,7 @@
         var cards = session.cards.concat(session.extra || []);
         var seen = session.seen || {};
         var config = session.selection || session.config;
-        var maxItems = config.maxItems || (!config.feed ? 50 : FULL_PAGE * FULL_PAGES);
+        var maxItems = MORE_LIMIT;
         var filter = session.filter;
         var now = new Date();
         var minimumAge = new Date(now.getTime());
@@ -938,8 +937,8 @@
                 });
                 return;
             }
-            var pageSize = session.config.maxItems || (!session.config.feed ? 50 : FULL_PAGE);
-            var pageLimit = pageSize === 50 ? 1 : FULL_PAGES;
+            var pageSize = MORE_LIMIT;
+            var pageLimit = 1;
             page = Math.max(1, parseInt(params.page, 10) || 1);
             if (page > pageLimit) { if (onerror) onerror(); return; }
             if (!session.full) session.full = fullSession(source, session);

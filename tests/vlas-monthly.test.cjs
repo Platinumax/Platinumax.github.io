@@ -18,10 +18,12 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
         const catalog = movies(100, 70, '2026-02-01').concat(movies(200, 70, '2025-01-01'), movies(300, 50, '2024-01-01'));
         const user = app({feed, onlyPeriod:'month', now:'2026-09-28T12:00:00Z', catalog});
         assert.equal((await user.main())[0].results.length, 24);
-        let all = [];
-        for (let p=1;p<=6;p++) all.push(...(await user.anyList('month',p)).results);
-        assert.equal(all.length,140);
-        assert.equal(new Set(all.map(c=>c.id)).size,140);
+        const full = await user.anyList('month');
+        const all = full.results;
+        assert.equal(all.length,100);
+        assert.equal(full.total_pages,1);
+        assert.equal((await user.anyList('month',2)).results.length,0);
+        assert.equal(new Set(all.map(c=>c.id)).size,100);
         assert.ok(all.every(c=>c.release_date >= '2025-01-01'));
     }
     // First four rows exclude only earlier displayed rows, even when some are disabled.
@@ -57,14 +59,14 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
             assert.equal(q.getAll('primary_release_date.gte').length,1);
         }
     }
-    // Top rows allow duplicates, have strict calendar bounds and a 50-film total.
+    // Top rows allow duplicates, have strict calendar bounds and a 100-film total.
     for (const feed of [true,false]) for (const period of ['topcurrent','topprevious']) {
-        const sample=movies(100,80,'2026-01-01').concat(movies(200,80,'2025-06-01'), movies(300,20,'2024-06-01'));
+        const sample=movies(1000,130,'2026-01-01').concat(movies(2000,130,'2025-06-01'), movies(3000,20,'2024-06-01'));
         const u=app({feed,onlyPeriod:period,catalog:sample,feedRows:{yearly:sample}});
         const [r]=await u.main(); const full=await u.anyList(period);
         assert.ok(r.title.endsWith(feed ? ' · Trakt' : ' · TMDB'));
         assert.equal(full.title, r.title);
-        assert.equal(r.results.length,24); assert.equal(full.results.length,50);
+        assert.equal(r.results.length,24); assert.equal(full.results.length,100);
         assert.equal(full.total_pages,1);
         assert.deepEqual(ids(r),ids(full).slice(0,24));
         assert.ok(full.results.every(c=>c.release_date.startsWith(period==='topcurrent'?'2026':'2025')));
@@ -87,12 +89,29 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
     const short=app({feed:true,onlyPeriod:'month',feedCatalog:movies(1,3,'2026-01-01'),catalog:movies(100,100,'2026-01-01')});
     assert.equal((await short.main())[0].results.length,3);
     assert.equal(short.requests.length,0);
-    // Existing discovery rows retain their filters, More is one full 50-film page.
+    // Fewer eligible movies stay fewer: never pad a 90-film list to 100.
     const old=app({now,onlyPeriod:'comedy',catalog:movies(1,90,'2026-01-01').map(c=>({...c,genre_ids:[35]}))});
     const [oldRow] = await old.main();
     assert.equal(oldRow.results.length,24);
     assert.ok(oldRow.title.endsWith(' · TMDB'));
-    assert.equal((await old.anyList('comedy')).results.length,50);
+    assert.equal((await old.anyList('comedy')).results.length,90);
+    // All thirteen rows expose one capped full list without changing their filters.
+    for (const period of ['week','month','halfyear','year','topcurrent','topprevious',
+        'fresh','best','comedy','thriller','scifi','gems','classics']) {
+        const date = period === 'topprevious' ? '2025-06-01' : period === 'best' ? '2020-06-01' :
+            period === 'classics' ? '1990-06-01' : '2026-09-01';
+        const genre = period === 'comedy' ? 35 : period === 'thriller' ? 53 : period === 'scifi' ? 878 : 18;
+        const sample = movies(4000,250,date).map(c=>({...c,genre_ids:[genre]}));
+        const u = app({now,onlyPeriod:period,feed:true,weekly:sample,catalog:sample,
+            feedRows:{weekly:sample,monthly:sample,yearly:sample}});
+        const [preview] = await u.main();
+        const full = await u.anyList(period);
+        assert.equal(preview.results.length,24, period);
+        assert.ok(preview.total_pages > 1, period + ' More button missing');
+        assert.equal(full.results.length,100, period);
+        assert.equal(full.total_pages,1, period);
+        assert.equal(new Set(ids(full)).size,100, period);
+    }
     const fresh=app({now,enabled:['week','fresh'],weekly:catalog,catalog});
     const fr=await fresh.all();
     assert.ok(ids(fr[1]).some(id=>ids(fr[0]).includes(id)));
