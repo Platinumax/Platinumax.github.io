@@ -30,7 +30,7 @@ class FeedGenres(unittest.TestCase):
                     patch.object(module, "movie_details", side_effect=movies.__getitem__):
                 module.main()
             feed = json.loads(module.FEED.read_text())
-        self.assertEqual(feed["rows"]["yearly"], [])
+        self.assertEqual([item['id'] for item in feed['rows']['yearly']], [1, 2, 3, 4, 5])
         self.assertEqual(feed["genre_policy"], "all")
         for period in ("weekly", "monthly"):
             self.assertEqual([item["id"] for item in feed["rows"][period]], [1, 2, 3, 4, 5])

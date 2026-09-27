@@ -1,268 +1,99 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const code = fs.readFileSync(process.env.VLAS_TEST_CODE || path.join(__dirname, '..', 'vlas.js'), 'utf8');
-function movie(id, date, genre = 18) {
-    return {id, title: `Film ${id}`, poster_path: '/p.jpg', release_date: date,
-        genre_ids: [genre], vote_average: 10};
-}
-const weekly = Array.from({length: 24}, (_, i) => movie(i + 1, '2026-01-02'));
-const premieres = Array.from({length: 100}, (_, i) => movie(i + 100, '2026-01-05'));
-const invalid = [movie(300, '2025-05-01'), movie(301, '2025-12-15'),
-    movie(302, '2026-01-16'), movie(303, ''), movie(304, '2024-01-05'),
-    movie(305, '2026-01-05', 27), movie(306, '2026-01-05'), movie(307, '2026-01-05')];
-const boundaries = [movie(308, '2025-12-16'), movie(309, '2026-01-15')];
-function app(options = {}) {
-    let now = options.now || '2026-01-15T12:00:00Z';
-    class Clock extends Date {
-        constructor(...args) { super(...(args.length ? args : [now])); }
-        static now() { return new Clock().getTime(); }
-    }
-    const requests = [], reacted = [];
-    const storage = options.storage || new Map();
-    const weekCatalog = options.weekly || weekly;
-    const catalog = options.catalog || weekly.concat(invalid, boundaries, premieres);
-    const tmdb = {
-        main() { throw Error('Unexpected native main'); },
-        list() { throw Error('Unexpected native list'); },
-        get(url, params, done) {
-            requests.push({url, page: params.page});
-            let selected = url.startsWith('discover/') ? catalog : weekCatalog;
-            if (url.startsWith('discover/') && !options.leaky) {
-                const q = new URLSearchParams(url.split('?')[1]);
-                const from = q.get('primary_release_date.gte'), to = q.get('primary_release_date.lte');
-                selected = selected.filter(c => (!from || c.release_date >= from) &&
-                    (!to || c.release_date <= to));
-            }
-            done({results: selected.slice((params.page - 1) * 20, params.page * 20),
-                total_pages: Math.ceil(selected.length / 20)});
-        }
-    };
-    class XHR {
-        open() {}
-        send() {
-            this.status = options.feed ? 200 : 404; this.readyState = 4;
-            this.responseText = JSON.stringify({version: 1, genre_policy: 'all',
-                generated_at_epoch: Clock.now() / 1000,
-                rows: options.feedRows || {weekly: weekCatalog, monthly: options.feedCatalog || catalog}});
-            this.onreadystatechange();
-        }
-    }
-    const Lampa = {
-        Api: {sources: {tmdb, cub: {reactionsGet(p, done) {
-            reacted.push(Number(p.id));
-            if (options.cubUnavailable) { done(null); return; }
-            done({result: options.reactions ? options.reactions(Number(p.id)) :
-                [{type: Number(p.id) === 306 ? 'shit' : 'fire', counter: 50}]});
-        }}}},
-        Storage: {get(key, fallback) {
-            if (storage.has(key)) return storage.get(key);
-            if (options.onlyPeriod && ['week', 'month', 'halfyear', 'year'].some(id => key === 'my_lampa_home_' + id)) return key === 'my_lampa_home_' + options.onlyPeriod;
-            if (key === 'my_lampa_home_week') return !options.onlyMonth;
-            if (key === 'my_lampa_home_month') return true;
-            if (key === 'my_lampa_home_genre_35' && options.comedy) return 'include';
-            if (key.startsWith('my_lampa_home_genre_') ||
-                key === 'my_lampa_home_hide_viewed' || key.endsWith('reaction_cache')) return fallback;
-            return false;
-        }, set(key, value) { storage.set(key, value); }},
-        Favorite: {check(c) { return {viewed: c.id === 307}; }}
-    };
-    vm.runInNewContext(code, {window: {Lampa}, Lampa, XMLHttpRequest: XHR,
-        Date: Clock, Math, JSON, Object, isFinite, clearTimeout,
-        setTimeout(fn, ms) { const t = setTimeout(fn, ms); t.unref(); return t; }});
-    return {requests, reacted, setDate(date) { now = date; },
-        weekList: page => new Promise(resolve => tmdb.list({url: 'vlas/week', page}, resolve, () => resolve({results: []}))),
-        main: () => new Promise(resolve => tmdb.main({}, resolve, () => resolve([]))),
-        list: page => new Promise(resolve => tmdb.list({url: 'vlas/month', page},
-            resolve, () => resolve({results: []})))};
-}
+const {app, movie} = require('./selection-harness.cjs');
+const ids = row => Array.from(row.results, c => c.id);
+const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,date));
 (async () => {
-    for (const period of ['year', 'halfyear']) {
-        const now = '2026-09-27T12:00:00Z';
-        const dated = days => new Date(new Date(now).getTime() - days * 86400000).toISOString().slice(0, 10);
-        const lower = period === 'year' ? 181 : 31, upper = period === 'year' ? 365 : 180;
-        const catalog = [movie(3000, dated(lower)), movie(3001, dated(upper)),
-            movie(3002, dated(lower - 1)), movie(3003, dated(upper + 1))];
-        const duplicate = [movie(4000, '2026-01-01')];
-        const user = app({now, onlyPeriod: period, feed: true, leaky: true, catalog,
-            feedRows: {weekly: duplicate, yearly: duplicate, halfyear: []}});
-        const [row] = await user.main();
-        assert.deepEqual(Array.from(row.results, c => c.id), [3000, 3001]);
-        assert.ok(row.title.startsWith('Сейчас популярны:'));
-        assert.ok(user.requests[0].url.includes('primary_release_date.lte=' + dated(lower)));
-        assert.ok(user.requests[0].url.includes('primary_release_date.gte=' + dated(upper)));
+    // No 30-day release constraint; exactly 24 current-year films must not widen.
+    for (const feed of [true, false]) {
+        for (const count of [0, 5, 23, 24, 40]) {
+            const catalog = movies(1000, 40, '2024-06-01').concat(movies(2000, count, '2026-01-01'));
+            const user = app({feed, onlyPeriod:'month', catalog});
+            const [row] = await user.main();
+            assert.equal(row.results.length, 24);
+            assert.equal(row.results.some(c => c.release_date.startsWith('2024')), count < 24);
+            const more = await user.anyList('month');
+            assert.ok(more.results.every(c => c.release_date.startsWith('2026')));
+        }
+        const catalog = movies(100, 70, '2026-02-01').concat(movies(200, 70, '2025-01-01'), movies(300, 50, '2024-01-01'));
+        const user = app({feed, onlyPeriod:'month', now:'2026-09-28T12:00:00Z', catalog});
+        assert.equal((await user.main())[0].results.length, 24);
+        let all = [];
+        for (let p=1;p<=6;p++) all.push(...(await user.anyList('month',p)).results);
+        assert.equal(all.length,140);
+        assert.equal(new Set(all.map(c=>c.id)).size,140);
+        assert.ok(all.every(c=>c.release_date >= '2025-01-01'));
     }
-    // Weekly applies current calendar year before CUB, in feeds and trending,
-    // preserves source order, and validates continuation and New Year rollover.
-    for (const feed of [false, true]) {
-        const current = Array.from({length: 70}, (_, i) => movie(2000 + i, '2026-01-01'));
-        const bad = [movie(2100, '2025-12-31'), movie(2101, '2027-01-01'), movie(2102, '')];
-        const user = app({feed, weekly: bad.concat(current), catalog: [],
-            reactions: id => [{type: id === 2001 ? 'shit' : 'fire', counter: 50}]});
-        const [row] = await user.main();
-        assert.deepEqual(Array.from(row.results, c => c.id), current.filter(c => c.id !== 2001).slice(0, 24).map(c => c.id));
-        assert.ok(!user.reacted.some(id => id >= 2100));
-        const more = await user.weekList(2);
-        assert.equal(more.results.length, 24);
-        assert.ok(more.results.every(c => c.release_date.startsWith('2026-')));
-        user.setDate('2027-01-02T12:00:00Z');
-        const renewed = await user.weekList(1);
-        assert.ok(renewed.results.every(c => c.release_date.startsWith('2027-')));
+    // First four rows exclude only earlier displayed rows, even when some are disabled.
+    const now = '2026-09-28T12:00:00Z';
+    const catalog = movies(1000, 170, '2026-09-01');
+    const user = app({now, feed:true, enabled:['week','month','halfyear','year','topcurrent'],
+        weekly:catalog, catalog, feedRows:{weekly:catalog,monthly:catalog,yearly:catalog}});
+    const rows = await user.all();
+    assert.equal(rows.length,5);
+    assert.equal(new Set(rows.slice(0,4).flatMap(ids)).size,96);
+    assert.equal(rows[4].results.length,24);
+    assert.ok(ids(rows[4]).some(id=>ids(rows[0]).includes(id)));
+    for (let r=1;r<4;r++) {
+        const more=await user.anyList(['week','month','halfyear','year'][r]);
+        const previous=rows.slice(0,r).flatMap(ids);
+        assert.ok(ids(more).every(id=>!previous.includes(id)));
     }
-
-    for (const options of [{}, {leaky: true}, {feed: true}]) {
-        const user = app(options);
-        const [week, month] = await user.main();
-        assert.equal(week.results.length, 24);
-        assert.equal(month.results.length, 24);
-        assert.ok(month.results.every(c => c.release_date >= '2025-12-16' &&
-            c.release_date <= '2026-01-15'), 'Monthly preview contains old or future premieres');
-        assert.equal(month.title, 'Сейчас популярны: релизы за месяц');
-        const first = await user.list(1), second = await user.list(2), third = await user.list(3);
-        assert.deepEqual(Array.from(first.results, c => c.id), Array.from(month.results, c => c.id));
-        assert.equal(second.results.length, 24);
-        assert.equal(third.results.length, 24);
-        const cards = week.results.concat(first.results, second.results, third.results);
-        assert.equal(new Set(cards.map(c => c.id)).size, cards.length);
-        assert.ok(cards.every(c => c.release_date >= '2025-12-16' && c.release_date <= '2026-01-15'),
-            'Old/future premiere passed the monthly filter');
-        assert.ok(cards.some(c => c.id === 308) && cards.some(c => c.id === 309));
-        assert.ok(!cards.some(c => c.id >= 300 && c.id <= 307));
-        assert.ok(!user.reacted.some(id => [300, 301, 302, 303, 304, 305, 307].includes(id)));
-        for (const req of user.requests.filter(r => r.url.startsWith('discover/'))) {
-            const q = new URLSearchParams(req.url.split('?')[1]);
-            assert.equal(q.get('primary_release_date.gte'), '2025-12-16');
-            assert.equal(q.get('primary_release_date.lte'), '2026-01-15');
-            assert.equal(q.get('with_release_type'), null);
-            assert.equal(q.get('release_date.gte'), null);
+    const disabled = app({now, feed:true, enabled:['month','year'],catalog,
+        feedRows:{monthly:catalog, yearly:catalog}});
+    const dr=await disabled.all();
+    assert.equal(new Set(dr.flatMap(ids)).size,48);
+    // Release boundaries are inclusive, future releases invalid, yearly is the source.
+    for (const feed of [true,false]) for (const [period, days] of [['halfyear',180],['year',365]]) {
+        const date = offset => new Date(Date.parse(now)-offset*86400000).toISOString().slice(0,10);
+        const sample=[movie(10,date(0)),movie(11,date(days)),movie(12,date(days+1)),movie(13,date(-1))];
+        const u=app({now,feed,onlyPeriod:period,catalog:sample,leaky:true,
+            feedRows:{yearly:sample, halfyear:[movie(99,'2026-09-01')]}});
+        const [r]=await u.main();
+        assert.deepEqual(ids(r),[10,11]);
+        assert.deepEqual(ids(await u.anyList(period)),[10,11]);
+        for(const req of u.requests) {
+            const q=new URLSearchParams(req.url.split('?')[1]);
+            assert.equal(q.getAll('primary_release_date.gte').length,1);
         }
     }
-    const scarce = app({onlyMonth: true, catalog: invalid.concat(premieres.slice(0, 5))});
-    const [short] = await scarce.main();
-    assert.equal(short.results.length, 5, 'Scarcity widened the release window');
-    assert.equal(short.total_pages, 1);
-    assert.equal((await app({comedy: true}).main()).length, 0);
-    const mild = Array.from({length: 20}, (_, i) => movie(800 + i, '2026-01-06'));
-    const ratings = id => id >= 800 ? [{type: 'nice', counter: 4 + id % 5},
-        {type: 'think', counter: 30}] : [{type: id === 306 ? 'shit' : 'fire', counter: 50}];
-    for (const feed of [false, true]) {
-        // Old caches stored mild scores as null. The new policy must recheck them.
-        const oldCache = Object.fromEntries(mild.map(c => [String(c.id),
-            {at: new Date('2026-01-15T12:00:00Z').getTime(), value: null}]));
-        const user = app({onlyMonth: true, feed, reactions: ratings,
-            storage: new Map([['my_lampa_home_reaction_cache', oldCache]]),
-            catalog: invalid.concat(premieres.slice(0, 3), mild)});
-        const [row] = await user.main();
-        assert.equal(row.results.length, 23, 'Monthly row did not keep enough 30-day candidates');
-        assert.ok(row.results.slice(0, 3).every(c => c.vlas_score >= 5.6));
-        assert.ok(row.results.every(c => c.release_date.startsWith('2026-01')));
-        assert.ok(!row.results.some(c => c.id === 306 || c.id === 305));
-        assert.equal((await user.list(1)).results.length, 23);
-        assert.deepEqual(Array.from((await user.main())[0].results, c => c.id),
-            Array.from(row.results, c => c.id), 'Cached mild scores changed the selection');
+    // Top rows allow duplicates, have strict calendar bounds and a 50-film total.
+    for (const feed of [true,false]) for (const period of ['topcurrent','topprevious']) {
+        const sample=movies(100,80,'2026-01-01').concat(movies(200,80,'2025-06-01'), movies(300,20,'2024-06-01'));
+        const u=app({feed,onlyPeriod:period,catalog:sample,feedRows:{yearly:sample}});
+        const [r]=await u.main(); const full=await u.anyList(period);
+        assert.equal(r.results.length,24); assert.equal(full.results.length,50);
+        assert.equal(full.total_pages,1);
+        assert.deepEqual(ids(r),ids(full).slice(0,24));
+        assert.ok(full.results.every(c=>c.release_date.startsWith(period==='topcurrent'?'2026':'2025')));
+        assert.equal((await u.anyList(period,2)).results.length,0);
     }
-    // Monthly keeps weak 30-day candidates after stronger weekly-style picks.
-    const isolated = app({weekly: premieres.slice(0, 3).concat(mild), reactions: ratings,
-        catalog: premieres.slice(0, 6).concat(mild)});
-    const isolatedRows = await isolated.main();
-    assert.equal(isolatedRows[0].results.length, 3);
-    assert.equal(isolatedRows[1].results.length, 24);
-    assert.equal(new Set(isolatedRows.flatMap(r => r.results.map(c => c.id))).size, 24);
-    const enough = app({onlyMonth: true, reactions: ratings, catalog: mild.concat(premieres)});
-    const [strong] = await enough.main();
-    assert.equal(strong.results.length, 24, 'Ten became a cap for strong premieres');
-    assert.ok(strong.results.every(c => c.vlas_score >= 5.6));
-    assert.ok((await enough.list(2)).results.every(c => c.vlas_score >= 5.6));
-    const shortFeed = app({onlyMonth: true, feed: true, reactions: ratings,
-        feedCatalog: invalid.concat(premieres.slice(0, 3)),
-        catalog: invalid.concat(premieres.slice(0, 3), mild)});
-    const [fedThenFilled] = await shortFeed.main();
-    assert.equal(fedThenFilled.results.length, 23, 'Short monthly feed did not continue with 30-day fillers');
-    assert.ok(shortFeed.requests.some(r => r.url.startsWith('discover/')),
-        'Short monthly feed never requested fallback discovery pages');
-    assert.ok(fedThenFilled.results.every(c => c.release_date >= '2025-12-16' &&
-        c.release_date <= '2026-01-15'));
-    const noCub = Array.from({length: 20}, (_, i) => movie(900 + i, '2026-01-07'));
-    const scarceReactions = id => id >= 900 ? [] : ratings(id);
-    const filledWithoutCub = app({onlyMonth: true, reactions: scarceReactions,
-        catalog: invalid.concat(premieres.slice(0, 3), noCub)});
-    const [weakFilled] = await filledWithoutCub.main();
-    assert.equal(weakFilled.results.length, 23, 'Missing audience evidence should fill after verified candidates');
-    assert.ok(weakFilled.results.slice(0, 3).every(c => c.vlas_score >= 5.6));
-    assert.ok(!weakFilled.results.some(c => c.id === 306));
-    const manyNoCub = Array.from({length: 60}, (_, i) => movie(1200 + i, '2026-01-07'));
-    const wide = app({onlyMonth: true, reactions: id => id >= 1200 ? [] : ratings(id),
-        catalog: invalid.concat(premieres.slice(0, 3), manyNoCub)});
-    const [wideRow] = await wide.main();
-    assert.equal(wideRow.results.length, 24, 'Monthly preview did not reach a full row');
-    assert.ok(wideRow.total_pages > 1, 'Monthly row did not expose More');
-    assert.ok((await wide.list(2)).results.length > 0, 'Monthly More did not return continuation');
-    const lowRated = Array.from({length: 40}, (_, i) => {
-        const card = movie(1300 + i, '2026-01-07');
-        card.vote_average = 4.9;
-        return card;
-    });
-    const lowUser = app({onlyMonth: true, reactions: id => id >= 1300 ? [] : ratings(id),
-        catalog: invalid.concat(premieres.slice(0, 3), lowRated)});
-    const [lowRow] = await lowUser.main();
-    assert.equal(lowRow.results.length, 3, 'Low-rated weak fillers entered monthly row');
-    assert.ok(!lowRow.results.some(c => c.id >= 1300));
-    // Screenshot regression: all nine reactions are negative, not an unknown rating.
-    const badSamples = [
-        [{type: 'shit', counter: 5}, {type: 'bore', counter: 4}],
-        [{type: 'fire', counter: 14}], // high score, insufficient evidence
-        [],
-        [{type: 'think', counter: 30}], // neutral is not audience approval
-        [{type: 'nice', counter: 15}, {type: 'bore', counter: 10}], // 40% negative
-        [{type: 'nice', counter: 10}, {type: 'bore', counter: 10}, {type: 'think', counter: 10}]
-    ];
-    const rejected = badSamples.map((_, i) => movie(1100 + i, '2026-01-07'));
-    rejected[0].title = 'After Impact';
-    const qualityReactions = id => id >= 1100 && id < 1106 ? badSamples[id - 1100] : ratings(id);
-    for (const feed of [false, true]) {
-        const previousCache = Object.fromEntries(rejected.map(c => [String(c.id), {
-            at: new Date('2026-01-15T12:00:00Z').getTime(), version: 3,
-            value: {score: 0, total: 9, weak: true}
-        }]));
-        const user = app({onlyMonth: true, feed, reactions: qualityReactions,
-            storage: new Map([['my_lampa_home_reaction_cache', previousCache]]),
-            catalog: rejected.concat(premieres.slice(0, 3), mild)});
-        const [row] = await user.main();
-        assert.ok(row.results.length >= 23);
-        assert.ok(!row.results.some(c => c.id === 1100 || c.id === 1105),
-            'Negative premiere passed');
-        assert.ok(user.reacted.includes(1100), 'Old low-signal cache was not invalidated');
-        assert.ok(!(await user.list(1)).results.some(c => c.id === 1100 || c.id === 1105));
-        // Put bad candidates after a full preview to exercise continuation too.
-        const more = app({onlyMonth: true, feed, reactions: qualityReactions,
-            catalog: premieres.slice(0, 40).concat(rejected, premieres.slice(40))});
-        await more.main();
-        const moreCards = (await more.list(2)).results;
-        assert.equal(moreCards.length, 24);
-        assert.ok(!moreCards.some(c => c.id === 1100 || c.id === 1105),
-            'More bypassed audience validation');
-    }
-    assert.equal((await app({onlyMonth: true, cubUnavailable: true}).main()).length, 0,
-        'CUB failure must not be treated as audience approval');
-    const tiny = app({onlyMonth: true, reactions: ratings, catalog: premieres.slice(0, 3).concat(mild.slice(0, 2))});
-    assert.equal((await tiny.main())[0].results.length, 5, 'Not enough valid films must not fabricate ten');
-    // The next day must invalidate an already opened rolling 30-day session.
-    const rollover = app({onlyMonth: true, catalog: premieres.concat(
-        Array.from({length: 40}, (_, i) => movie(1000 + i, '2026-02-01')))});
-    await rollover.main();
-    rollover.setDate('2026-01-16T12:00:00Z');
-    await rollover.list(1);
-    assert.ok(rollover.requests.some(r => r.url.includes('primary_release_date.gte=2025-12-17')));
-    for (const [now, from, until] of [
-        ['2026-01-01T12:00:00Z', '2025-12-02', '2026-01-01'],
-        ['2024-02-29T12:00:00Z', '2024-01-30', '2024-02-29'],
-        ['2026-09-25T12:00:00Z', '2026-08-26', '2026-09-25']
-    ]) {
-        const edge = app({now, onlyMonth: true, catalog: [movie(600, from), movie(601, until)]});
-        const [row] = await edge.main();
-        assert.equal(row.results.length, 2);
-        assert.ok(edge.requests[0].url.includes('primary_release_date.gte=' + from));
-    }
-    console.log('Last 30 days: release dates, source validation, scarcity, More, rollover, genres and reactions OK');
-})().catch(error => { console.error(error); process.exitCode = 1; });
+    const scarce=app({onlyPeriod:'topcurrent',catalog:movies(1,8,'2026-01-01').concat(movies(20,60,'2025-01-01'))});
+    assert.equal((await scarce.main())[0].results.length,8);
+    const exact=app({onlyPeriod:'month',catalog:movies(1,24,'2026-01-01').concat(movies(50,50,'2025-01-01'))});
+    assert.ok((await exact.main())[0].total_pages > 1, '24 current-year films hid previous-year More');
+    // New Year invalidates both top scopes and preview filters.
+    const changing=app({onlyPeriod:'topcurrent',catalog:movies(1,50,'2026-01-01').concat(movies(60,8,'2027-01-01'))});
+    await changing.main(); changing.setDate('2027-01-02T12:00:00Z');
+    assert.equal((await changing.anyList('topcurrent')).results.length,8);
+    // CUB quality and mixed sorting retained; missing reactions cannot fill monthly.
+    const quality=app({onlyPeriod:'month',catalog:movies(1,6,'2026-01-01'),
+        reactions:id=> id===1 ? [{type:'nice',counter:50}] : id===2 ? [{type:'fire',counter:50}] : id===3 ? [] : [{type:'shit',counter:50}]});
+    const [qr]=await quality.main(); assert.deepEqual(ids(qr),[2,1]);
+    assert.equal((await app({onlyMonth:true,cubUnavailable:true}).main()).length,0);
+    // A short but working feed does not silently switch to TMDB.
+    const short=app({feed:true,onlyPeriod:'month',feedCatalog:movies(1,3,'2026-01-01'),catalog:movies(100,100,'2026-01-01')});
+    assert.equal((await short.main())[0].results.length,3);
+    assert.equal(short.requests.length,0);
+    // Existing discovery rows retain their filters, More is one full 50-film page.
+    const old=app({now,onlyPeriod:'comedy',catalog:movies(1,90,'2026-01-01').map(c=>({...c,genre_ids:[35]}))});
+    assert.equal((await old.main())[0].results.length,24);
+    assert.equal((await old.anyList('comedy')).results.length,50);
+    const fresh=app({now,enabled:['week','fresh'],weekly:catalog,catalog});
+    const fr=await fresh.all();
+    assert.ok(ids(fr[1]).some(id=>ids(fr[0]).includes(id)));
+    // A year constraint is not widened when current-year quality meets the threshold.
+    const filtered=app({onlyPeriod:'month',catalog:movies(1,30,'2026-01-01').concat(movies(40,40,'2025-01-01')),
+        reactions:id=>[{type:id<=10?'shit':'fire',counter:50}]});
+    assert.ok((await filtered.main())[0].results.some(c=>c.release_date.startsWith('2025')));
+    console.log('Agreed selection: year fallback, deduplication, dates, yearly tops, More and CUB: OK');
+})().catch(error=>{console.error(error);process.exitCode=1;});

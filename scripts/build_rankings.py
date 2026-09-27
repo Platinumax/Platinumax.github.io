@@ -1,8 +1,8 @@
 """Build the static Lampa feed from official Trakt and TMDB APIs.
 
 Requires TRAKT_CLIENT_ID and TMDB_API_TOKEN in the GitHub Actions environment.
-The daily Trakt archive supports a real rolling 180-day activity ranking after
-180/365 consecutive daily snapshots; until then the client uses its honest fallback.
+The client applies release windows to direct weekly/monthly/yearly rankings.
+Daily snapshots are retained for compatibility, not substituted for yearly.
 """
 import datetime as dt
 import json
@@ -42,21 +42,27 @@ def get_json(url, headers):
 
 
 def trakt(period, limit=200):
-    url = "https://api.trakt.tv/movies/watched/{}?page=1&limit={}".format(period, limit)
-    print("Trakt {}: requesting {} candidates".format(period, limit), flush=True)
-    payload = get_json(url, {
+    headers = {
         "trakt-api-key": TRAKT_KEY,
         "trakt-api-version": "2",
         "Content-Type": "application/json",
         "User-Agent": "VlasLampaHome/3.0",
-    })
-    movies = []
-    for item in payload:
-        movie = item.get("movie") or {}
-        tmdb_id = (movie.get("ids") or {}).get("tmdb")
-        watchers = item.get("watcher_count")
-        if isinstance(tmdb_id, int) and isinstance(watchers, int) and watchers > 0:
-            movies.append((tmdb_id, watchers))
+    }
+    movies, seen = [], set()
+    for page in range(1, 2 if period == "daily" else 6):
+        url = "https://api.trakt.tv/movies/watched/{}?page={}&limit={}".format(period, page, limit)
+        print("Trakt {}: requesting page {}".format(period, page), flush=True)
+        payload = get_json(url, headers)
+        before = len(movies)
+        for item in payload:
+            movie = item.get("movie") or {}
+            tmdb_id = (movie.get("ids") or {}).get("tmdb")
+            watchers = item.get("watcher_count")
+            if isinstance(tmdb_id, int) and isinstance(watchers, int) and watchers > 0 and tmdb_id not in seen:
+                seen.add(tmdb_id)
+                movies.append((tmdb_id, watchers))
+        if not payload or len(movies) == before or len(payload) < limit:
+            break
     print("Trakt {}: received {} candidates".format(period, len(movies)), flush=True)
     return movies
 
@@ -142,16 +148,11 @@ def main():
                if (TODAY - dt.timedelta(days=364)).isoformat() <= key <= TODAY.isoformat()}
     raw = {period: fetch_period(period) for period in ("weekly", "monthly")}
     raw["halfyear"] = roll_history(history, 180)
-    yearly = roll_history(history, 365)
-    raw["yearly"] = yearly or fetch_period("yearly")
-    duplicate_year = not yearly and bool(raw["weekly"]) and {i for i, _ in raw["yearly"]} == {i for i, _ in raw["weekly"]}
+    raw["yearly"] = fetch_period("yearly")
     sources = {period: "trakt_" + period if raw[period] else "tmdb_fallback"
                for period in ("weekly", "monthly")}
     sources["halfyear"] = "daily_history_180" if raw["halfyear"] else "tmdb_fallback"
-    sources["yearly"] = "daily_history_365" if yearly else "trakt_yearly"
-    if duplicate_year or not raw["yearly"]:
-        raw["yearly"] = []
-        sources["yearly"] = "tmdb_fallback"
+    sources["yearly"] = "trakt_yearly" if raw["yearly"] else "tmdb_fallback"
 
     ids = {tmdb_id for movies in raw.values() for tmdb_id, _ in movies}
     # A failed TMDB response must not publish a partial ranking.
@@ -165,8 +166,6 @@ def main():
             item = details[tmdb_id]
             if not valid(item):
                 continue
-            if period == "weekly" and not item["release_date"].startswith(str(TODAY.year) + "-"):
-                continue
             card = dict(item)
             card["trakt_watchers"] = watchers
             row.append(card)
@@ -176,8 +175,8 @@ def main():
     result = {"version": 1, "genre_policy": "all", "generated_at": now.isoformat(),
               "generated_at_epoch": int(now.timestamp()),
               "sources": ["Trakt popularity", "TMDB metadata", "CUB reactions in Lampa"],
-              "row_sources": sources, "weekly_release_year": TODAY.year,
-              "yearly_duplicates_weekly": duplicate_year, "trakt_errors": errors, "rows": rows}
+              "row_sources": sources, "release_policy": "client",
+              "trakt_errors": errors, "rows": rows}
     HISTORY.write_text(json.dumps(history, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     FEED.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     print("Trakt availability:", errors or "all requested periods available")

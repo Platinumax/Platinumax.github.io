@@ -5,7 +5,7 @@ const vm = require('node:vm');
 
 const code = fs.readFileSync(path.join(__dirname, '..', 'vlas.js'), 'utf8');
 const KEY = 'my_lampa_home_';
-const rowIds = ['week', 'month', 'halfyear', 'year', 'fresh', 'best', 'comedy',
+const rowIds = ['week', 'month', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy',
     'thriller', 'scifi', 'gems', 'classics'];
 const kinds = [[18], [35], [878], [27], [35, 27], [16], [99], [10770],
     [53], [9648], [35, 878], [], [18, 35]];
