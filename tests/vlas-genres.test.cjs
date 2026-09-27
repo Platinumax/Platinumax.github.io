@@ -11,7 +11,7 @@ const kinds = [[18], [35], [878], [27], [35, 27], [16], [99], [10770],
     [53], [9648], [35, 878], [], [18, 35]];
 const fixtures = Array.from({length: 780}, (_, i) => ({
     id: i + 1, title: `Movie ${i + 1}`, poster_path: '/p.jpg',
-    release_date: '2020-03-01', genre_ids: kinds[i % kinds.length],
+    release_date: new Date().getFullYear() + '-01-01', genre_ids: kinds[i % kinds.length],
     vote_average: 9.9
 }));
 
@@ -140,7 +140,7 @@ function checkSelected(cards) {
     assert.ok((await user.main())[0].results.every(c => !c.genre_ids.includes(27)));
     assert.equal(user.updates, 2);
 
-    const generic = app({enabled: ['best']});
+    const generic = app({enabled: ['best'], catalog: fixtures.map(c => ({...c, release_date: '2020-03-01'}))});
     generic.genre(35, 'include'); generic.genre(878, 'include');
     checkSelected((await generic.main())[0].results);
     assert.ok(generic.requests[0].url.includes('with_genres=35|878'));

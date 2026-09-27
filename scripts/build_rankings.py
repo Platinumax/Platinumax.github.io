@@ -2,13 +2,15 @@
 
 Requires TRAKT_CLIENT_ID and TMDB_API_TOKEN in the GitHub Actions environment.
 The daily Trakt archive supports a real rolling 180-day activity ranking after
-180 consecutive daily snapshots; until then the client uses its honest fallback.
+180/365 consecutive daily snapshots; until then the client uses its honest fallback.
 """
 import datetime as dt
 import json
 import os
 from pathlib import Path
 import urllib.request
+import urllib.error
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,8 +24,17 @@ TMDB_TOKEN = os.environ["TMDB_API_TOKEN"]
 
 def get_json(url, headers):
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=25) as response:
-        return json.load(response)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=25) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 2:
+                raise
+        time.sleep(2 ** (attempt + 1))
 
 
 def trakt(period, limit=200):
@@ -69,15 +80,19 @@ def valid(movie):
     date = movie.get("release_date") or ""
     if not movie.get("poster_path") or not movie.get("title") or movie.get("adult"):
         return False
-    if len(date) != 10 or date > TODAY.isoformat():
+    try:
+        released = dt.date.fromisoformat(date)
+    except ValueError:
+        return False
+    if released > TODAY or released.isoformat() != date:
         return False
     # Genre preferences belong to each viewer and are applied by the plugin.
     return True
 
 
-def roll_halfyear(history):
-    days = [(TODAY - dt.timedelta(days=offset)).isoformat() for offset in range(179, -1, -1)]
-    if not all(day in history for day in days):
+def roll_history(history, window):
+    days = [(TODAY - dt.timedelta(days=offset)).isoformat() for offset in range(window - 1, -1, -1)]
+    if not all(history.get(day) for day in days):
         return []
     counts = {}
     for day in days:
@@ -95,10 +110,22 @@ def main():
 
     raw = {period: trakt(period) for period in ("weekly", "monthly", "yearly")}
     daily = trakt("daily", 250)
+    if not daily:
+        raise ValueError("Empty daily snapshot; refusing to publish incomplete history")
     history[TODAY.isoformat()] = {str(tmdb_id): count for tmdb_id, count in daily}
     history = {key: value for key, value in history.items()
-               if (TODAY - dt.timedelta(days=179)).isoformat() <= key <= TODAY.isoformat()}
-    raw["halfyear"] = roll_halfyear(history)
+               if (TODAY - dt.timedelta(days=364)).isoformat() <= key <= TODAY.isoformat()}
+    raw["halfyear"] = roll_history(history, 180)
+    yearly = roll_history(history, 365)
+    duplicate_year = bool(raw["weekly"]) and {i for i, _ in raw["yearly"]} == {i for i, _ in raw["weekly"]}
+    sources = {"weekly": "trakt_weekly", "monthly": "trakt_monthly",
+               "halfyear": "daily_history_180" if raw["halfyear"] else "tmdb_fallback",
+               "yearly": "daily_history_365" if yearly else "trakt_yearly"}
+    if yearly:
+        raw["yearly"] = yearly
+    elif duplicate_year or not raw["yearly"]:
+        raw["yearly"] = []
+        sources["yearly"] = "tmdb_fallback"
 
     ids = {tmdb_id for movies in raw.values() for tmdb_id, _ in movies}
     # A failed TMDB response must not publish a partial ranking.
@@ -112,6 +139,8 @@ def main():
             item = details[tmdb_id]
             if not valid(item):
                 continue
+            if period == "weekly" and not item["release_date"].startswith(str(TODAY.year) + "-"):
+                continue
             card = dict(item)
             card["trakt_watchers"] = watchers
             row.append(card)
@@ -121,7 +150,8 @@ def main():
     result = {"version": 1, "genre_policy": "all", "generated_at": now.isoformat(),
               "generated_at_epoch": int(now.timestamp()),
               "sources": ["Trakt popularity", "TMDB metadata", "CUB reactions in Lampa"],
-              "rows": rows}
+              "row_sources": sources, "weekly_release_year": TODAY.year,
+              "yearly_duplicates_weekly": duplicate_year, "rows": rows}
     HISTORY.write_text(json.dumps(history, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     FEED.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     print("Built rows:", {name: len(items) for name, items in rows.items()})
