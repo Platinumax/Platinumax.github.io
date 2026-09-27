@@ -9,6 +9,7 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
             const catalog = movies(1000, 40, '2024-06-01').concat(movies(2000, count, '2026-01-01'));
             const user = app({feed, onlyPeriod:'month', catalog});
             const [row] = await user.main();
+            assert.ok(row.title.endsWith(feed ? ' · Trakt' : ' · TMDB'));
             assert.equal(row.results.length, 24);
             assert.equal(row.results.some(c => c.release_date.startsWith('2024')), count < 24);
             const more = await user.anyList('month');
@@ -61,6 +62,8 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
         const sample=movies(100,80,'2026-01-01').concat(movies(200,80,'2025-06-01'), movies(300,20,'2024-06-01'));
         const u=app({feed,onlyPeriod:period,catalog:sample,feedRows:{yearly:sample}});
         const [r]=await u.main(); const full=await u.anyList(period);
+        assert.ok(r.title.endsWith(feed ? ' · Trakt' : ' · TMDB'));
+        assert.equal(full.title, r.title);
         assert.equal(r.results.length,24); assert.equal(full.results.length,50);
         assert.equal(full.total_pages,1);
         assert.deepEqual(ids(r),ids(full).slice(0,24));
@@ -86,7 +89,9 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
     assert.equal(short.requests.length,0);
     // Existing discovery rows retain their filters, More is one full 50-film page.
     const old=app({now,onlyPeriod:'comedy',catalog:movies(1,90,'2026-01-01').map(c=>({...c,genre_ids:[35]}))});
-    assert.equal((await old.main())[0].results.length,24);
+    const [oldRow] = await old.main();
+    assert.equal(oldRow.results.length,24);
+    assert.ok(oldRow.title.endsWith(' · TMDB'));
     assert.equal((await old.anyList('comedy')).results.length,50);
     const fresh=app({now,enabled:['week','fresh'],weekly:catalog,catalog});
     const fr=await fresh.all();
