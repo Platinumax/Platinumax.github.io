@@ -1470,7 +1470,7 @@
         Lampa.SettingsApi.addParam({
             component: component,
             param: { name: KEY + 'personal_date_from', type: 'input',
-                placeholder: 'YYYY-MM-DD', default: '' },
+                values: '', placeholder: 'YYYY-MM-DD', default: '' },
             field: { name: 'Своя дата — от',
                 description: 'Можно указать только одну границу. Формат: YYYY-MM-DD' },
             onChange: function (value) {
@@ -1480,7 +1480,7 @@
         Lampa.SettingsApi.addParam({
             component: component,
             param: { name: KEY + 'personal_date_to', type: 'input',
-                placeholder: 'YYYY-MM-DD', default: '' },
+                values: '', placeholder: 'YYYY-MM-DD', default: '' },
             field: { name: 'Своя дата — до',
                 description: 'Если указана хотя бы одна корректная ручная дата, быстрый период не используется' },
             onChange: function (value) {
@@ -1490,7 +1490,7 @@
         Lampa.SettingsApi.addParam({
             component: component,
             param: { name: KEY + 'personal_year_from', type: 'input',
-                placeholder: 'например 2020', default: '' },
+                values: '', placeholder: 'например 2020', default: '' },
             field: { name: 'Год релиза — от',
                 description: 'Дополнительное условие, пересекается с периодом релиза' },
             onChange: function (value) {
@@ -1500,7 +1500,7 @@
         Lampa.SettingsApi.addParam({
             component: component,
             param: { name: KEY + 'personal_year_to', type: 'input',
-                placeholder: 'например 2026', default: '' },
+                values: '', placeholder: 'например 2026', default: '' },
             field: { name: 'Год релиза — до',
                 description: 'Оставьте пустым, если верхняя граница не нужна' },
             onChange: function (value) {
