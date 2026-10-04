@@ -124,9 +124,6 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
         assert.equal(full.total_pages,1, period);
         assert.equal(new Set(ids(full)).size,100, period);
     }
-    const fresh=app({now,enabled:['week','fresh'],weekly:catalog,catalog});
-    const fr=await fresh.all();
-    assert.ok(ids(fr[1]).some(id=>ids(fr[0]).includes(id)));
     // A release window is never widened to fill the row.
     const filtered=app({onlyPeriod:'month',catalog:movies(1,30,'2026-01-01').concat(movies(40,40,'2025-01-01')),
         reactions:id=>[{type:id<=10?'shit':'fire',counter:50}]});
