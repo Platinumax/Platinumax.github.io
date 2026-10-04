@@ -5,13 +5,13 @@ const vm = require('node:vm');
 
 const code = fs.readFileSync(path.join(__dirname, '..', 'vlas.js'), 'utf8');
 const KEY = 'my_lampa_home_';
-const rowIds = ['goodfresh', 'week', 'month', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy',
+const rowIds = ['week', 'month', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy',
     'thriller', 'scifi', 'gems', 'classics'];
 const kinds = [[18], [35], [878], [27], [35, 27], [16], [99], [10770],
     [53], [9648], [35, 878], [], [18, 35]];
 const fixtures = Array.from({length: 780}, (_, i) => ({
     id: i + 1, title: `Movie ${i + 1}`, poster_path: '/p.jpg',
-    release_date: new Date().getFullYear() + '-01-01', genre_ids: kinds[i % kinds.length],
+    release_date: new Date().toISOString().slice(0, 10), genre_ids: kinds[i % kinds.length],
     vote_average: 9.9
 }));
 
@@ -139,23 +139,6 @@ function checkSelected(cards) {
     user.change('genres_defaults');
     assert.ok((await user.main())[0].results.every(c => !c.genre_ids.includes(27)));
     assert.equal(user.updates, 2);
-
-    const today = new Date();
-    function dateAgo(days) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - days);
-        return d.toISOString().slice(0, 10);
-    }
-    const goodFreshCatalog = [
-        {id: 2, title: 'Fresh now', poster_path: '/p.jpg', release_date: dateAgo(0), genre_ids: [18], vote_average: 9},
-        {id: 3, title: 'Fresh 59', poster_path: '/p.jpg', release_date: dateAgo(59), genre_ids: [18], vote_average: 9},
-        {id: 4, title: 'Old 61', poster_path: '/p.jpg', release_date: dateAgo(61), genre_ids: [18], vote_average: 9},
-        {id: 5, title: 'Future', poster_path: '/p.jpg', release_date: dateAgo(-1), genre_ids: [18], vote_average: 9}
-    ];
-    const goodFresh = app({enabled: ['goodfresh'], catalog: goodFreshCatalog});
-    const [goodFreshRow] = await goodFresh.main();
-    assert.deepEqual(Array.from(goodFreshRow.results, c => c.id), [2, 3],
-        'Добротный свежак must keep only releases from the last 60 days');
 
     const generic = app({enabled: ['best'], catalog: fixtures.map(c => ({...c, release_date: '2020-03-01'}))});
     generic.genre(35, 'include'); generic.genre(878, 'include');

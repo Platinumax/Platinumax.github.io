@@ -3,60 +3,69 @@ const {app, movie} = require('./selection-harness.cjs');
 const ids = row => Array.from(row.results, c => c.id);
 const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,date));
 (async () => {
-    // No 30-day release constraint; exactly 24 current-year films must not widen.
-    for (const feed of [true, false]) {
-        for (const count of [0, 5, 23, 24, 40]) {
-            const catalog = movies(1000, 40, '2024-06-01').concat(movies(2000, count, '2026-01-01'));
-            const user = app({feed, onlyPeriod:'month', catalog});
-            const [row] = await user.main();
-            assert.ok(row.title.endsWith(feed ? ' · Trakt' : ' · TMDB'));
-            assert.equal(row.results.length, 24);
-            assert.equal(row.results.some(c => c.release_date.startsWith('2024')), count < 24);
-            const more = await user.anyList('month');
-            assert.ok(more.results.every(c => c.release_date.startsWith('2026')));
-        }
-        const catalog = movies(100, 70, '2026-02-01').concat(movies(200, 70, '2025-01-01'), movies(300, 50, '2024-01-01'));
-        const user = app({feed, onlyPeriod:'month', now:'2026-09-28T12:00:00Z', catalog});
-        assert.equal((await user.main())[0].results.length, 24);
-        const full = await user.anyList('month');
-        const all = full.results;
-        assert.equal(all.length,100);
-        assert.equal(full.total_pages,1);
-        assert.equal((await user.anyList('month',2)).results.length,0);
-        assert.equal(new Set(all.map(c=>c.id)).size,100);
-        assert.ok(all.every(c=>c.release_date >= '2025-01-01'));
-    }
-    // First four rows exclude only earlier displayed rows, even when some are disabled.
-    const now = '2026-09-28T12:00:00Z';
-    const catalog = movies(1000, 170, '2026-09-01');
-    const user = app({now, feed:true, enabled:['week','month','halfyear','year','topcurrent'],
-        weekly:catalog, catalog, feedRows:{weekly:catalog,monthly:catalog,yearly:catalog}});
-    const rows = await user.all();
-    assert.equal(rows.length,5);
-    assert.equal(new Set(rows.slice(0,4).flatMap(ids)).size,96);
-    assert.equal(rows[4].results.length,24);
-    assert.ok(ids(rows[4]).some(id=>ids(rows[0]).includes(id)));
-    for (let r=1;r<4;r++) {
-        const more=await user.anyList(['week','month','halfyear','year'][r]);
-        const previous=rows.slice(0,r).flatMap(ids);
-        assert.ok(ids(more).every(id=>!previous.includes(id)));
-    }
-    const disabled = app({now, feed:true, enabled:['month','year'],catalog,
-        feedRows:{monthly:catalog, yearly:catalog}});
-    const dr=await disabled.all();
-    assert.equal(new Set(dr.flatMap(ids)).size,48);
-    // Release boundaries are inclusive, future releases invalid, yearly is the source.
-    for (const feed of [true,false]) for (const [period, days] of [['halfyear',180],['year',365]]) {
+    // Month is a strict rolling 30-day release window in both the row and More.
+    {
+        const now = '2026-09-28T12:00:00Z';
         const date = offset => new Date(Date.parse(now)-offset*86400000).toISOString().slice(0,10);
-        const sample=[movie(10,date(0)),movie(11,date(days)),movie(12,date(days+1)),movie(13,date(-1))];
-        const u=app({now,feed,onlyPeriod:period,catalog:sample,leaky:true,
-            feedRows:{yearly:sample, halfyear:[movie(99,'2026-09-01')]}});
-        const [r]=await u.main();
-        assert.deepEqual(ids(r),[10,11]);
-        assert.deepEqual(ids(await u.anyList(period)),[10,11]);
-        for(const req of u.requests) {
-            const q=new URLSearchParams(req.url.split('?')[1]);
-            assert.equal(q.getAll('primary_release_date.gte').length,1);
+        for (const feed of [true, false]) {
+            const sample = movies(1000,40,date(0)).concat(
+                movies(1100,40,date(30)), movies(1200,40,date(31)), movies(1300,10,date(-1)));
+            const user = app({feed, onlyPeriod:'month', now, catalog:sample,
+                feedRows:{monthly:sample}});
+            const [row] = await user.main();
+            assert.equal(row.results.length,24);
+            assert.ok(row.results.every(c=>c.release_date>=date(30) && c.release_date<=date(0)));
+            const full = await user.anyList('month');
+            assert.equal(full.results.length,80);
+            assert.ok(full.results.every(c=>c.release_date>=date(30) && c.release_date<=date(0)));
+        }
+    }
+    // The first four rows own their films across both the home preview and «Ещё».
+    {
+        const now = '2026-09-28T12:00:00Z';
+        const recent = movies(1000,170,'2026-09-25');
+        const oldHalf = movies(2000,170,'2026-01-15');
+        const user = app({now, feed:true, enabled:['week','month','halfyear','year','topcurrent'],
+            weekly:recent, catalog:recent.concat(oldHalf),
+            feedRows:{weekly:recent,monthly:recent,yearly:recent.concat(oldHalf)}});
+        const rows = await user.all();
+        assert.equal(rows.length,5);
+        assert.equal(new Set(rows.slice(0,4).flatMap(ids)).size,96);
+        assert.equal(rows[4].results.length,24);
+        assert.ok(ids(rows[4]).some(id=>ids(rows[0]).includes(id)));
+
+        const fullWeek = await user.anyList('week');
+        const fullMonth = await user.anyList('month');
+        const fullHalf = await user.anyList('halfyear');
+        const fullYear = await user.anyList('year');
+        const exclusive = [fullWeek, fullMonth, fullHalf, fullYear].map(ids);
+        for (let a=0;a<exclusive.length;a++) for (let b=a+1;b<exclusive.length;b++)
+            assert.ok(exclusive[a].every(id=>!exclusive[b].includes(id)),
+                'More lists of exclusive rows overlap');
+
+        const disabled = app({now, feed:true, enabled:['month','year'],
+            catalog:recent.concat(oldHalf),
+            feedRows:{monthly:recent, yearly:oldHalf}});
+        const dr=await disabled.all();
+        assert.equal(new Set(dr.flatMap(ids)).size,48);
+    }
+    // Release boundaries are inclusive; future releases and adjacent windows are rejected.
+    {
+        const now = '2026-09-28T12:00:00Z';
+        const date = offset => new Date(Date.parse(now)-offset*86400000).toISOString().slice(0,10);
+        const cases = [
+            ['week', [movie(10,date(0)),movie(11,date(7)),movie(12,date(8)),movie(13,date(-1))], [10,11]],
+            ['month',[movie(20,date(0)),movie(21,date(30)),movie(22,date(31)),movie(23,date(-1))],[20,21]],
+            ['halfyear',[movie(30,date(0)),movie(31,date(180)),movie(32,date(181)),movie(33,date(-1))],[30,31]],
+            ['year',[movie(40,date(180)),movie(41,date(181)),movie(42,date(365)),movie(43,date(366))],[41,42]]
+        ];
+        for (const feed of [true,false]) for (const [period,sample,expected] of cases) {
+            const feedRows = period==='week' ? {weekly:sample} :
+                period==='month' ? {monthly:sample} : {yearly:sample};
+            const u=app({now,feed,onlyPeriod:period,catalog:sample,weekly:sample,leaky:true,feedRows});
+            const [r]=await u.main();
+            assert.deepEqual(ids(r),expected,period);
+            assert.deepEqual(ids(await u.anyList(period)),expected,period+' More');
         }
     }
     // Top rows allow duplicates, have strict calendar bounds and a 100-film total.
@@ -75,7 +84,7 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
     const scarce=app({onlyPeriod:'topcurrent',catalog:movies(1,8,'2026-01-01').concat(movies(20,60,'2025-01-01'))});
     assert.equal((await scarce.main())[0].results.length,8);
     const exact=app({onlyPeriod:'month',catalog:movies(1,24,'2026-01-01').concat(movies(50,50,'2025-01-01'))});
-    assert.ok((await exact.main())[0].total_pages > 1, '24 current-year films hid previous-year More');
+    assert.equal((await exact.main())[0].total_pages,1, 'Month widened beyond its 30-day release window');
     // New Year invalidates both top scopes and preview filters.
     const changing=app({onlyPeriod:'topcurrent',catalog:movies(1,50,'2026-01-01').concat(movies(60,8,'2027-01-01'))});
     await changing.main(); changing.setDate('2027-01-02T12:00:00Z');
@@ -98,7 +107,9 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
     // All thirteen rows expose one capped full list without changing their filters.
     for (const period of ['week','month','halfyear','year','topcurrent','topprevious',
         'fresh','best','comedy','thriller','scifi','gems','classics']) {
-        const date = period === 'topprevious' ? '2025-06-01' : period === 'best' ? '2020-06-01' :
+        const date = period === 'week' ? '2026-09-25' : period === 'month' ? '2026-09-10' :
+            period === 'halfyear' ? '2026-06-01' : period === 'year' ? '2026-01-15' :
+            period === 'topprevious' ? '2025-06-01' : period === 'best' ? '2020-06-01' :
             period === 'classics' ? '1990-06-01' : '2026-09-01';
         const genre = period === 'comedy' ? 35 : period === 'thriller' ? 53 : period === 'scifi' ? 878 : 18;
         const sample = movies(4000,250,date).map(c=>({...c,genre_ids:[genre]}));
@@ -115,9 +126,9 @@ const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,d
     const fresh=app({now,enabled:['week','fresh'],weekly:catalog,catalog});
     const fr=await fresh.all();
     assert.ok(ids(fr[1]).some(id=>ids(fr[0]).includes(id)));
-    // A year constraint is not widened when current-year quality meets the threshold.
+    // A release window is never widened to fill the row.
     const filtered=app({onlyPeriod:'month',catalog:movies(1,30,'2026-01-01').concat(movies(40,40,'2025-01-01')),
         reactions:id=>[{type:id<=10?'shit':'fire',counter:50}]});
-    assert.ok((await filtered.main())[0].results.some(c=>c.release_date.startsWith('2025')));
+    assert.ok((await filtered.main())[0].results.every(c=>c.release_date.startsWith('2026')));
     console.log('Agreed selection: year fallback, deduplication, dates, yearly tops, More and CUB: OK');
 })().catch(error=>{console.error(error);process.exitCode=1;});

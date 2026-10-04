@@ -7,7 +7,7 @@ function movie(id, date, genre = 18) {
     return {id, title: `Film ${id}`, poster_path: '/p.jpg', release_date: date,
         genre_ids: [genre], vote_average: 10};
 }
-const weekly = Array.from({length: 24}, (_, i) => movie(i + 1, '2026-01-02'));
+const weekly = Array.from({length: 24}, (_, i) => movie(i + 1, '2026-01-10'));
 const premieres = Array.from({length: 100}, (_, i) => movie(i + 100, '2026-01-05'));
 const invalid = [movie(300, '2025-05-01'), movie(301, '2025-12-15'),
     movie(302, '2026-01-16'), movie(303, ''), movie(304, '2024-01-05'),

@@ -41,6 +41,7 @@
     var ROW_PAGES = 12;
     var MORE_LIMIT = 100;
     var ROTATION_WINDOWS = 6;
+    var EXCLUSIVE_ROWS = ['week', 'month', 'halfyear', 'year'];
     var rowSessions = {};
 
     function loadSaved() {
@@ -207,25 +208,21 @@
 
     // TMDB queries supply candidates; reactions determine whether they qualify.
     var COLLECTIONS = [
-        { id: 'goodfresh', title: 'Добротный свежак',
-          fallbackTitle: 'Добротный свежак', feed: 'weekly',
-          releaseDays: 60, preferYear: true, moreYears: 2, feedKeepsFilters: true,
-          query: 'trending/movie/week' },
         { id: 'week', title: 'Самые популярные за неделю',
           fallbackTitle: 'В тренде на этой неделе', feed: 'weekly',
-          preferYear: true, moreYears: 2, feedKeepsFilters: true,
+          releaseDays: 7, preferYear: true, moreYears: 2, feedKeepsFilters: true,
           query: 'trending/movie/week' },
         { id: 'month', title: 'Самые популярные за месяц',
           fallbackTitle: 'Популярные фильмы', feed: 'monthly',
-          preferYear: true, moreYears: 2, feedKeepsFilters: true, excludeRows: ['week'],
+          releaseDays: 30, preferYear: true, moreYears: 2, feedKeepsFilters: true, excludeRows: ['week'],
           query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Популярные фильмы последних 180 дней', feed: 'yearly',
           releaseDays: 180, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month'],
           query: 'sort_by=popularity.desc' },
         { id: 'year', title: 'Самые популярные за предыдущее полугодие',
-          fallbackTitle: 'Популярные фильмы последних 365 дней', feed: 'yearly',
-          releaseDays: 365, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month', 'halfyear'],
+          fallbackTitle: 'Популярные фильмы 181–365 дней назад', feed: 'yearly',
+          releaseDays: 365, olderThanDays: 181, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month', 'halfyear'],
           query: 'sort_by=popularity.desc' },
         { id: 'topcurrent', title: 'Топ — текущий год',
           feed: 'yearly', currentYear: true, feedKeepsFilters: true, maxItems: MORE_LIMIT,
@@ -415,7 +412,7 @@
         var upper = cutoff, lower = '';
         var boundary;
         var url = 'discover/movie?' + config.query;
-        if (config.id === 'week' || config.id === 'goodfresh') return config.query;
+        if (config.id === 'week') return config.query;
         var genres = rowGenres(config, filter);
         // The row theme is also checked locally, alongside the user's OR selection.
         if (!genres.length) genres = filter.include;
@@ -496,8 +493,17 @@
         return true;
     }
 
+    function exclusiveRow(id) {
+        return EXCLUSIVE_ROWS.indexOf(id) !== -1;
+    }
+
     function excludedByRows(id, config, used) {
         return config.excludeRows && config.excludeRows.indexOf(used[id]) !== -1;
+    }
+
+    function ownedByOtherExclusiveRow(id, config, used) {
+        return exclusiveRow(config.id) && used[id] && used[id] !== config.id &&
+            exclusiveRow(used[id]);
     }
 
     function previousRows(config, filter) {
@@ -579,8 +585,8 @@
                 hasMore = results.length > TARGET;
                 for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
                 preview = results.slice(0, TARGET);
-                if (['week', 'month', 'halfyear', 'year'].indexOf(config.id) !== -1)
-                    for (i = 0; i < preview.length; i++) used[String(preview[i].id)] = config.id;
+                if (exclusiveRow(config.id))
+                    for (i = 0; i < results.length; i++) used[String(results[i].id)] = config.id;
                 if (preview.length) visibleState.count++;
                 saveWeekIds(config, week, preview, filter);
                 rowSessions[config.id] = {
@@ -798,7 +804,8 @@
                     if (!valid(card, fromFeed && !config.feedKeepsFilters ? {} : config,
                         formatDate(minimumAge), now.getFullYear(), filter)) continue;
                     id = String(card.id);
-                    if (seen[id] || excludedByRows(id, config, session.used)) continue;
+                    if (seen[id] || excludedByRows(id, config, session.used) ||
+                        ownedByOtherExclusiveRow(id, config, session.used)) continue;
                     if (hideViewed() && watched(card)) continue;
                     seen[id] = true;
                     candidates.push({ card: card, position: checked++ });
@@ -812,8 +819,12 @@
                             if (approvedReaction(reaction, config)) {
                                 var copy = ratedCard(candidate.card, reaction,
                                     candidate.position);
+                                if (exclusiveRow(config.id))
+                                    session.used[String(candidate.card.id)] = config.id;
                                 approved.push(copy);
                             } else if (canFillWeak(candidate.card, reaction, config)) {
+                                if (exclusiveRow(config.id))
+                                    session.used[String(candidate.card.id)] = config.id;
                                 fillers.push(fillerCard(candidate.card, reaction,
                                     candidate.position));
                             }
