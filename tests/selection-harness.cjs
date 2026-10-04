@@ -5,7 +5,8 @@ const vm = require('node:vm');
 const code = fs.readFileSync(process.env.VLAS_TEST_CODE || path.join(__dirname, '..', 'vlas.js'), 'utf8');
 function movie(id, date, genre = 18) {
     return {id, title: `Film ${id}`, poster_path: '/p.jpg', release_date: date,
-        genre_ids: [genre], vote_average: 10};
+        genre_ids: [genre], vote_average: 10, popularity: 1000 - id,
+        original_language: 'en', origin_country: ['US']};
 }
 const weekly = Array.from({length: 24}, (_, i) => movie(i + 1, '2026-01-10'));
 const premieres = Array.from({length: 100}, (_, i) => movie(i + 100, '2026-01-05'));
@@ -21,6 +22,8 @@ function app(options = {}) {
     }
     const requests = [], reacted = [];
     const storage = options.storage || new Map();
+    const rowIds = ['personal','week','month','twomonth','halfyear','year','topcurrent',
+        'topprevious','fresh','best','comedy','thriller','scifi','gems','classics'];
     const weekCatalog = options.weekly || weekly;
     const catalog = options.catalog || weekly.concat(invalid, boundaries, premieres);
     const tmdb = {
@@ -32,8 +35,11 @@ function app(options = {}) {
             if (url.startsWith('discover/') && !options.leaky) {
                 const q = new URLSearchParams(url.split('?')[1]);
                 const from = q.get('primary_release_date.gte'), to = q.get('primary_release_date.lte');
+                const country = q.get('with_origin_country'), language = q.get('with_original_language');
                 selected = selected.filter(c => (!from || c.release_date >= from) &&
-                    (!to || c.release_date <= to));
+                    (!to || c.release_date <= to) &&
+                    (!country || !c.origin_country || c.origin_country.includes(country)) &&
+                    (!language || !c.original_language || c.original_language === language));
             }
             done({results: selected.slice((params.page - 1) * 20, params.page * 20),
                 total_pages: Math.ceil(selected.length / 20)});
@@ -58,8 +64,12 @@ function app(options = {}) {
         }}}},
         Storage: {get(key, fallback) {
             if (storage.has(key)) return storage.get(key);
-            if (options.enabled && key.startsWith('my_lampa_home_') && !key.includes('genre_') && !key.endsWith('hide_viewed') && !key.endsWith('reaction_cache')) return options.enabled.includes(key.slice('my_lampa_home_'.length));
-            if (options.onlyPeriod && ['week', 'month', 'twomonth', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy', 'thriller', 'scifi', 'gems', 'classics'].some(id => key === 'my_lampa_home_' + id)) return key === 'my_lampa_home_' + options.onlyPeriod;
+            if (key === 'my_lampa_home_personal')
+                return options.personal === true || options.onlyPeriod === 'personal';
+            if (options.enabled && rowIds.some(id => key === 'my_lampa_home_' + id))
+                return options.enabled.includes(key.slice('my_lampa_home_'.length));
+            if (options.onlyPeriod && rowIds.some(id => key === 'my_lampa_home_' + id))
+                return key === 'my_lampa_home_' + options.onlyPeriod;
             if (key === 'my_lampa_home_week') return !options.onlyMonth;
             if (key === 'my_lampa_home_month') return true;
             if (key === 'my_lampa_home_genre_35' && options.comedy) return 'include';

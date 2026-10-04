@@ -42,6 +42,18 @@
     var MORE_LIMIT = 100;
     var ROTATION_WINDOWS = 6;
     var EXCLUSIVE_ROWS = ['week', 'month', 'twomonth', 'halfyear', 'year'];
+    var PERSONAL_MAX_ITEMS = 700;
+    var PERSONAL_COUNTRIES = {
+        any: 'Любая', UA: 'Украина', US: 'США', GB: 'Великобритания',
+        FR: 'Франция', DE: 'Германия', IT: 'Италия', ES: 'Испания',
+        CA: 'Канада', AU: 'Австралия', KR: 'Южная Корея', JP: 'Япония',
+        IN: 'Индия', PL: 'Польша', TR: 'Турция', RU: 'Россия'
+    };
+    var PERSONAL_LANGUAGES = {
+        any: 'Любой', ru: 'Русский', uk: 'Украинский', en: 'Английский',
+        fr: 'Французский', de: 'Немецкий', es: 'Испанский', it: 'Итальянский',
+        ko: 'Корейский', ja: 'Японский', pl: 'Польский', tr: 'Турецкий'
+    };
     var rowSessions = {};
 
     function loadSaved() {
@@ -206,6 +218,86 @@
             '-' + (day < 10 ? '0' : '') + day;
     }
 
+    function stored(name, fallback) {
+        try { return Lampa.Storage.get(KEY + name, fallback); }
+        catch (ignore) { return fallback; }
+    }
+
+    function cleanDate(value) {
+        var text = String(value || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '';
+        var parsed = new Date(text + 'T00:00:00Z');
+        return isFinite(parsed.getTime()) && formatDate(parsed) === text ? text : '';
+    }
+
+    function cleanYear(value) {
+        var year = parseInt(value, 10);
+        return isFinite(year) && year >= 1900 && year <= 2100 ? year : 0;
+    }
+
+    function dateDaysAgo(days) {
+        var date = new Date();
+        date.setDate(date.getDate() - days);
+        return formatDate(date);
+    }
+
+    function dateYearsAgo(years) {
+        var date = new Date();
+        date.setFullYear(date.getFullYear() - years);
+        return formatDate(date);
+    }
+
+    function personalEnabled() {
+        return stored('personal', true) !== false;
+    }
+
+    function personalSettingsKey() {
+        return [
+            stored('personal_period', 'any'),
+            stored('personal_date_from', ''), stored('personal_date_to', ''),
+            stored('personal_year_from', ''), stored('personal_year_to', ''),
+            stored('personal_cub_min', '0'), stored('personal_reactions_min', '15'),
+            stored('personal_hide_viewed', true) !== false ? '1' : '0',
+            stored('personal_sort', 'match'), stored('personal_country', 'any'),
+            stored('personal_language', 'any')
+        ].join('|');
+    }
+
+    function personalConfig() {
+        var period = stored('personal_period', 'any');
+        var manualFrom = cleanDate(stored('personal_date_from', ''));
+        var manualTo = cleanDate(stored('personal_date_to', ''));
+        var from = '', to = '', sort = stored('personal_sort', 'match');
+        if (manualFrom || manualTo) {
+            from = manualFrom; to = manualTo;
+        } else {
+            if (period === '7') from = dateDaysAgo(7);
+            else if (period === '30') from = dateDaysAgo(30);
+            else if (period === '31_60') { from = dateDaysAgo(60); to = dateDaysAgo(31); }
+            else if (period === '61_180') { from = dateDaysAgo(180); to = dateDaysAgo(61); }
+            else if (period === '181_365') { from = dateDaysAgo(365); to = dateDaysAgo(181); }
+            else if (period === '3y') from = dateYearsAgo(3);
+            else if (period === '5y') from = dateYearsAgo(5);
+            else if (period === '10y') from = dateYearsAgo(10);
+        }
+        return {
+            id: 'personal', title: 'Моя подборка', fallbackTitle: 'Моя подборка',
+            personal: true, plainTitle: true,
+            query: sort === 'new' ? 'sort_by=primary_release_date.desc' : 'sort_by=popularity.desc',
+            dateFrom: from, dateTo: to,
+            yearFrom: cleanYear(stored('personal_year_from', '')),
+            yearTo: cleanYear(stored('personal_year_to', '')),
+            minScore: Number(stored('personal_cub_min', '0')) || 0,
+            minReactions: Number(stored('personal_reactions_min', '15')) || 15,
+            personalSort: sort,
+            originCountry: stored('personal_country', 'any') === 'any' ? '' :
+                stored('personal_country', 'any'),
+            originalLanguage: stored('personal_language', 'any') === 'any' ? '' :
+                stored('personal_language', 'any'),
+            settingsKey: personalSettingsKey()
+        };
+    }
+
     // TMDB queries supply candidates; reactions determine whether they qualify.
     var COLLECTIONS = [
         { id: 'week', title: 'Самые популярные за неделю',
@@ -341,6 +433,27 @@
             key: include.join(',') + '|' + exclude.join(',') };
     }
 
+    function personalGenreFilter() {
+        var include = [], exclude = [], i, mode;
+        for (i = 0; i < GENRES.length; i++) {
+            mode = stored('personal_genre_' + GENRES[i].id, 'allow');
+            if (mode !== 'include' && mode !== 'exclude' && mode !== 'allow') mode = 'allow';
+            if (mode === 'include') include.push(GENRES[i].id);
+            if (mode === 'exclude') exclude.push(GENRES[i].id);
+        }
+        return { include: include, exclude: exclude,
+            key: include.join(',') + '|' + exclude.join(',') };
+    }
+
+    function filterForConfig(config) {
+        return config && config.personal ? personalGenreFilter() : genreFilter();
+    }
+
+    function hideViewedFor(config) {
+        if (config && config.personal) return stored('personal_hide_viewed', true) !== false;
+        return hideViewed();
+    }
+
     function genreMatches(card, filter) {
         var i, match = !filter.include.length;
         // Unknown genres cannot satisfy a requested restriction.
@@ -383,6 +496,14 @@
         date = card.release_date;
         if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date > cutoff ||
             Number(date.substr(0, 4)) < 1900) return false;
+        if (config.dateFrom && date < config.dateFrom) return false;
+        if (config.dateTo && date > config.dateTo) return false;
+        if (config.yearFrom && Number(date.substr(0, 4)) < config.yearFrom) return false;
+        if (config.yearTo && Number(date.substr(0, 4)) > config.yearTo) return false;
+        if (config.originalLanguage && card.original_language &&
+            card.original_language !== config.originalLanguage) return false;
+        if (config.originCountry && card.origin_country && card.origin_country.length &&
+            card.origin_country.indexOf(config.originCountry) === -1) return false;
         if (config.fromYear && Number(date.substr(0, 4)) < config.fromYear) return false;
         if (config.beforeYear && Number(date.substr(0, 4)) >= config.beforeYear) return false;
         if (config.fromYears && Number(date.substr(0, 4)) < year - config.fromYears) return false;
@@ -422,6 +543,8 @@
         if (!genres.length) genres = filter.include;
         if (genres.length) url += '&with_genres=' + genres.join('|');
         if (filter.exclude.length) url += '&without_genres=' + filter.exclude.join(',');
+        if (config.originCountry) url += '&with_origin_country=' + encodeURIComponent(config.originCountry);
+        if (config.originalLanguage) url += '&with_original_language=' + encodeURIComponent(config.originalLanguage);
         if (config.releaseDays) {
             boundary = new Date();
             boundary.setDate(boundary.getDate() - config.releaseDays);
@@ -438,6 +561,14 @@
         if (config.previousYear) { lower = (year - 1) + '-01-01'; upper = (year - 1) + '-12-31'; }
         if (config.moreYears) lower = (year - config.moreYears + 1) + '-01-01';
         if (config.fromYear) lower = config.fromYear + '-01-01';
+        if (config.dateFrom && config.dateFrom > lower) lower = config.dateFrom;
+        if (config.dateTo && config.dateTo < upper) upper = config.dateTo;
+        if (config.yearFrom && config.yearFrom + '-01-01' > lower)
+            lower = config.yearFrom + '-01-01';
+        if (config.yearTo) {
+            boundary = config.yearTo + '-12-31';
+            if (boundary < upper) upper = boundary;
+        }
         if (config.beforeYears) {
             boundary = (year - config.beforeYears) + '-12-31';
             if (boundary < upper) upper = boundary;
@@ -461,6 +592,7 @@
         copy.vote_count = reaction.total;
         copy.vlas_score = reaction.score;
         copy.vlas_rank = (1 - position / 400) * 6 + reaction.score * 0.4;
+        copy.vlas_position = position;
         return copy;
     }
 
@@ -482,8 +614,49 @@
     }
 
     function approvedReaction(reaction, config) {
+        if (config && config.personal) {
+            if (!reaction || reaction.blocked || reaction.weak ||
+                reaction.total < (config.minReactions || 15)) return false;
+            if (config.minScore && reaction.score < config.minScore) return false;
+            return reaction.positive > reaction.negative;
+        }
         if (!reaction || reaction.blocked || reaction.weak || reaction.total < 15) return false;
         return !reaction.soft && reaction.score >= 5.6;
+    }
+
+    function sortCards(cards, config) {
+        if (config && config.personal) {
+            if (config.personalSort === 'popular') {
+                cards.sort(function (a, b) {
+                    return (a.vlas_position || 0) - (b.vlas_position || 0);
+                });
+            } else if (config.personalSort === 'cub') {
+                cards.sort(function (a, b) {
+                    return (b.vlas_score || 0) - (a.vlas_score || 0) ||
+                        (b.vote_count || 0) - (a.vote_count || 0);
+                });
+            } else if (config.personalSort === 'reactions') {
+                cards.sort(function (a, b) {
+                    return (b.vote_count || 0) - (a.vote_count || 0) ||
+                        (b.vlas_score || 0) - (a.vlas_score || 0);
+                });
+            } else if (config.personalSort === 'new') {
+                cards.sort(function (a, b) {
+                    return String(b.release_date || '').localeCompare(String(a.release_date || '')) ||
+                        (b.vlas_score || 0) - (a.vlas_score || 0);
+                });
+            } else {
+                cards.sort(function (a, b) {
+                    return (b.vlas_rank || 0) - (a.vlas_rank || 0) ||
+                        (b.vote_count || 0) - (a.vote_count || 0);
+                });
+            }
+            return;
+        }
+        if (config && config.feed)
+            cards.sort(function (a, b) { return b.vlas_rank - a.vlas_rank; });
+        else
+            cards.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
     }
 
     function canFillWeak(card, reaction, config) {
@@ -551,7 +724,8 @@
             var feedOffset = 0;
             var usedFeed = false;
             var exhausted = false;
-            var rowTitle = (config.fallbackTitle || config.title) + ' · TMDB';
+            var rowTitle = config.plainTitle ? config.title :
+                (config.fallbackTitle || config.title) + ' · TMDB';
 
             function finish() {
                 var i, data, hasMore, preview;
@@ -566,18 +740,14 @@
                 }
                 finished = true;
                 clearTimeout(timer);
-                if (filter.key !== genreFilter().key || (config.currentMonth &&
+                if (filter.key !== filterForConfig(config).key || (config.currentMonth &&
                     cutoff.substr(0, 7) !== formatDate(new Date()).substr(0, 7))) {
                     ready({ results: [] }); return;
                 }
                 for (i = 0; i < repeats.length && results.length < TARGET + 1; i++) {
                     results.push(repeats[i]);
                 }
-                if (config.feed) {
-                    results.sort(function (a, b) { return b.vlas_rank - a.vlas_rank; });
-                } else {
-                    results.sort(function (a, b) { return b.vlas_score - a.vlas_score; });
-                }
+                sortCards(results, config);
                 if (config.fillWeak && results.length < TARGET + 1) {
                     fillers.sort(function (a, b) {
                         return b.vlas_rank - a.vlas_rank || b.vlas_score - a.vlas_score;
@@ -587,7 +757,8 @@
                 }
                 if (config.maxItems) results = results.slice(0, config.maxItems);
                 hasMore = results.length > TARGET;
-                for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
+                if (!config.personal)
+                    for (i = 0; i < results.length; i++) delete results[i].vlas_rank;
                 preview = results.slice(0, TARGET);
                 if (exclusiveRow(config.id))
                     for (i = 0; i < results.length; i++) used[String(results[i].id)] = config.id;
@@ -632,14 +803,15 @@
                         cutoff, now.getFullYear(), filter)) continue;
                     id = String(card.id);
                     if (seen[id] || excludedByRows(id, config, used)) continue;
-                    if (hideViewed() && watched(card)) continue;
+                    if (hideViewedFor(config) && watched(card)) continue;
                     seen[id] = true;
                     candidates.push({ card: card, repeat: (config.allowUsedAsRepeat &&
                         !!used[id]) || (!config.feed && config.id !== 'fresh' && !!used[id]) || !!recent[id],
                         position: checked++ });
                     if (checked >= ROW_CANDIDATES) break;
                 }
-                rowTitle = (fromFeed ? config.title : (config.fallbackTitle || config.title)) +
+                rowTitle = config.plainTitle ? config.title :
+                    (fromFeed ? config.title : (config.fallbackTitle || config.title)) +
                     (fromFeed ? ' · Trakt' : ' · TMDB');
                 pending = candidates.length;
                 if (!pending) { next(); return; }
@@ -742,7 +914,7 @@
         var cards = session.cards.concat(session.extra || []);
         var seen = session.seen || {};
         var config = session.selection || session.config;
-        var maxItems = MORE_LIMIT;
+        var maxItems = session.config.personal ? PERSONAL_MAX_ITEMS : MORE_LIMIT;
         var filter = session.filter;
         var now = new Date();
         var minimumAge = new Date(now.getTime());
@@ -810,7 +982,7 @@
                     id = String(card.id);
                     if (seen[id] || excludedByRows(id, config, session.used) ||
                         ownedByOtherExclusiveRow(id, config, session.used)) continue;
-                    if (hideViewed() && watched(card)) continue;
+                    if (hideViewedFor(config) && watched(card)) continue;
                     seen[id] = true;
                     candidates.push({ card: card, position: checked++ });
                 }
@@ -834,16 +1006,13 @@
                             }
                             pending--;
                             if (!pending) {
-                                approved.sort(function (a, b) {
-                                    return config.feed ? b.vlas_rank - a.vlas_rank :
-                                        b.vlas_score - a.vlas_score;
-                                });
+                                sortCards(approved, config);
                                 fillers.sort(function (a, b) {
                                     return b.vlas_rank - a.vlas_rank ||
                                         b.vlas_score - a.vlas_score;
                                 });
                                 for (var k = 0; k < approved.length; k++) {
-                                    delete approved[k].vlas_rank;
+                                    if (!config.personal) delete approved[k].vlas_rank;
                                     cards.push(approved[k]);
                                 }
                                 for (k = 0; k < fillers.length; k++) {
@@ -937,32 +1106,43 @@
         source.list = function (params, oncomplete, onerror) {
             var match = /^vlas\/([a-z]+)$/.exec(params && params.url || '');
             var session = match && rowSessions[match[1]];
-            var page, config, i, filter = genreFilter();
+            var page, config, i, filter;
             if (!match) return originalList.apply(source, arguments);
-            // Rebuild stale previews; never send a Vlas URL to the native API.
-            if (!session || session.filter.key !== filter.key ||
-                (session.config.currentMonth &&
-                session.month !== formatDate(new Date()).substr(0, 7)) ||
-                session.date !== formatDate(new Date())) {
+            if (match[1] === 'personal') {
+                config = personalConfig();
+                filter = personalGenreFilter();
+            } else {
+                filter = genreFilter();
                 for (i = 0; i < COLLECTIONS.length; i++)
                     if (COLLECTIONS[i].id === match[1]) config = COLLECTIONS[i];
-                if (!config || !enabled(config.id) || !rowAllowed(config, filter)) {
+            }
+            if (!session || session.filter.key !== filter.key ||
+                (config && config.personal && session.config.settingsKey !== config.settingsKey) ||
+                (session && session.config.currentMonth &&
+                session.month !== formatDate(new Date()).substr(0, 7)) ||
+                (session && session.date !== formatDate(new Date()))) {
+                if (!config || (config.personal ? !personalEnabled() : !enabled(config.id)) ||
+                    !rowAllowed(config, filter)) {
                     if (onerror) onerror();
                     return;
                 }
-                makeRow(source, config, params || {}, previousRows(config, filter), { count: 0 }, filter)(function (data) {
+                makeRow(source, config, params || {},
+                    config.personal ? {} : previousRows(config, filter),
+                    { count: 0 }, filter)(function (data) {
                     if (data.results.length) source.list(params, oncomplete, onerror);
                     else if (onerror) onerror();
                 });
                 return;
             }
-            var pageSize = MORE_LIMIT;
-            var pageLimit = 1;
+            var pageSize = session.config.personal ? TARGET : MORE_LIMIT;
+            var pageLimit = session.config.personal ? Math.ceil(PERSONAL_MAX_ITEMS / TARGET) : 1;
             page = Math.max(1, parseInt(params.page, 10) || 1);
             if (page > pageLimit) { if (onerror) onerror(); return; }
             if (!session.full) session.full = fullSession(source, session);
             session.full.ensure(page * pageSize, function (cards, exhausted) {
-                if (session.filter.key !== genreFilter().key ||
+                var currentConfig = session.config.personal ? personalConfig() : session.config;
+                if (session.filter.key !== filterForConfig(currentConfig).key ||
+                    (session.config.personal && session.config.settingsKey !== currentConfig.settingsKey) ||
                     (session.config.currentMonth &&
                     session.month !== formatDate(new Date()).substr(0, 7)) ||
                     session.date !== formatDate(new Date())) {
@@ -970,11 +1150,12 @@
                     return;
                 }
                 var pageCards = cards.slice((page - 1) * pageSize, page * pageSize);
-                if (!pageCards.length) { onerror(); return; }
+                if (!pageCards.length) { if (onerror) onerror(); return; }
                 oncomplete({ results: pageCards, source: 'tmdb',
                     page: page, title: session.title,
                     total_pages: exhausted ?
-                        Math.max(1, Math.ceil(cards.length / pageSize)) : pageLimit });
+                        Math.max(1, Math.ceil(cards.length / pageSize)) :
+                        (session.config.personal ? Math.min(pageLimit, page + 1) : pageLimit) });
             });
         };
 
@@ -983,6 +1164,15 @@
             var used = {};
             var visibleState = { count: 0 };
             var i, anyEnabled = false, filter = genreFilter();
+            var personal = null, personalFilter = null;
+            if (personalEnabled()) {
+                anyEnabled = true;
+                personal = personalConfig();
+                personalFilter = personalGenreFilter();
+                if (rowAllowed(personal, personalFilter))
+                    rows.push(makeRow(source, personal, params || {}, {},
+                        visibleState, personalFilter));
+            }
             for (i = 0; i < COLLECTIONS.length; i++) {
                 if (enabled(COLLECTIONS[i].id)) {
                     anyEnabled = true;
@@ -993,12 +1183,19 @@
             }
             if (!anyEnabled) return originalMain.apply(source, arguments);
             if (!rows.length && Lampa.Noty)
-                Lampa.Noty.show('Все жанры для включённых рядов исключены. Откройте «Настройки Vlas → Жанры для подборок».');
+                Lampa.Noty.show('Все жанры для включённых подборок исключены. Проверьте фильтры Vlas.');
+
+            function changed() {
+                if (filter.key !== genreFilter().key) return true;
+                if (personal && (personalFilter.key !== personalGenreFilter().key ||
+                    personal.settingsKey !== personalConfig().settingsKey)) return true;
+                return false;
+            }
 
             function next(done, fail) {
                 var collected = [];
                 function take() {
-                    if (filter.key !== genreFilter().key) {
+                    if (changed()) {
                         rows = [];
                         if (fail) fail();
                         return;
@@ -1086,7 +1283,8 @@
                 if (Lampa.SettingsApi.getComponent && !Lampa.SettingsApi.getComponent('fxapi'))
                     throw new Error('Filmix settings are not registered');
                 Lampa.Settings.create('fxapi', { onBack: function () {
-                    Lampa.Settings.create('my_lampa_home');
+                    Lampa.Settings.create(nestedSettingsAvailable() ?
+                        'my_lampa_home_filmix' : 'my_lampa_home');
                 } });
             } catch (ignore) {
                 if (Lampa.Noty && Lampa.Noty.show)
@@ -1132,10 +1330,22 @@
         });
     }
 
-    function genresChanged() {
+    function nestedSettingsAvailable() {
+        return !!(Lampa.Template && Lampa.Template.add &&
+            Lampa.Settings && Lampa.Settings.create);
+    }
+
+    function settingsChanged(message) {
         rowSessions = {};
-        if (Lampa.Noty && Lampa.Noty.show)
-            Lampa.Noty.show('Жанры сохранены. Откройте главную заново, чтобы обновить подборки.');
+        if (message && Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(message);
+    }
+
+    function genresChanged() {
+        settingsChanged('Жанры сохранены. Откройте главную заново, чтобы обновить подборки.');
+    }
+
+    function personalChanged() {
+        settingsChanged();
     }
 
     function setGenrePreset(defaults) {
@@ -1146,67 +1356,297 @@
         if (Lampa.Settings && Lampa.Settings.update) Lampa.Settings.update();
     }
 
-    function addGenreSettings() {
-        var component = 'my_lampa_home';
-        // Register a nested page without adding a second root settings button.
-        // On older builds, keep the genre controls in the main Vlas section.
-        if (Lampa.Template && Lampa.Template.add && Lampa.Settings && Lampa.Settings.create) {
-            component = 'my_lampa_home_genres';
-            Lampa.Template.add('settings_' + component, '<div></div>');
-            Lampa.SettingsApi.addParam({
-                component: 'my_lampa_home',
-                param: { name: KEY + 'genres', type: 'button' },
-                field: { name: 'Жанры для подборок',
-                    description: 'Персональный выбор и исключения для всех рядов Vlas и «Ещё»' },
-                onChange: function () {
-                    Lampa.Settings.create(component, { onBack: function () {
-                        Lampa.Settings.create('my_lampa_home');
-                    } });
-                }
-            });
+    function setPersonalGenrePreset() {
+        for (var i = 0; i < GENRES.length; i++)
+            Lampa.Storage.set(KEY + 'personal_genre_' + GENRES[i].id, 'allow');
+        personalChanged();
+        if (Lampa.Settings && Lampa.Settings.update) Lampa.Settings.update();
+    }
+
+    function addNestedSection(parent, component, key, name, description) {
+        if (!nestedSettingsAvailable()) return parent;
+        Lampa.Template.add('settings_' + component, '<div></div>');
+        Lampa.SettingsApi.addParam({
+            component: parent,
+            param: { name: KEY + key, type: 'button' },
+            field: { name: name, description: description || '' },
+            onChange: function () {
+                Lampa.Settings.create(component, { onBack: function () {
+                    Lampa.Settings.create(parent);
+                } });
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + key + '_back', type: 'button' },
+            field: { name: 'Назад' },
+            onChange: function () { Lampa.Settings.create(parent); }
+        });
+        return component;
+    }
+
+    function addGenreControls(component, personal) {
+        var prefix = personal ? 'personal_genre_' : 'genre_';
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + prefix + 'help', type: 'static' },
+            field: { name: 'Как работает выбор',
+                description: '«Выбирать» — хотя бы один выбранный жанр. «Исключать» — фильм скрывается целиком. «Разрешать» — жанр не влияет на отбор.' }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + prefix + 'all', type: 'button' },
+            field: { name: 'Разрешить все жанры' },
+            onChange: personal ? setPersonalGenrePreset : function () { setGenrePreset(false); }
+        });
+        if (!personal) {
             Lampa.SettingsApi.addParam({
                 component: component,
-                param: { name: KEY + 'genres_back', type: 'button' },
-                field: { name: 'Назад в настройки Vlas' },
-                onChange: function () { Lampa.Settings.create('my_lampa_home'); }
+                param: { name: KEY + 'genres_defaults', type: 'button' },
+                field: { name: 'Вернуть исходные настройки жанров',
+                    description: 'Исключить ужасы, мультфильмы, документальные и телефильмы; остальные разрешить.' },
+                onChange: function () { setGenrePreset(true); }
             });
         }
-        Lampa.SettingsApi.addParam({
-            component: component,
-            param: { name: KEY + 'genres_help', type: 'static' },
-            field: { name: 'Как работает выбор',
-                description: '«Выбирать» — хотя бы один из выбранных жанров. «Исключать» — скрывать фильм целиком. «Разрешать» — без предпочтения. После изменений откройте главную заново.' }
-        });
-        Lampa.SettingsApi.addParam({
-            component: component,
-            param: { name: KEY + 'genres_all', type: 'button' },
-            field: { name: 'Разрешить все жанры',
-                description: 'Сбросить выбор и исключения жанров. Проверка реакций зрителей сохранится.' },
-            onChange: function () { setGenrePreset(false); }
-        });
-        Lampa.SettingsApi.addParam({
-            component: component,
-            param: { name: KEY + 'genres_defaults', type: 'button' },
-            field: { name: 'Вернуть исходные настройки жанров',
-                description: 'Исключить ужасы, мультфильмы, документальные и телефильмы; остальные разрешить.' },
-            onChange: function () { setGenrePreset(true); }
-        });
         for (var i = 0; i < GENRES.length; i++) {
             (function (genre) {
+                var fallback = personal ? 'allow' : (genre.hidden ? 'exclude' : 'allow');
                 Lampa.SettingsApi.addParam({
                     component: component,
-                    param: { name: KEY + 'genre_' + genre.id, type: 'select',
+                    param: { name: KEY + prefix + genre.id, type: 'select',
                         values: { allow: 'Разрешать', include: 'Выбирать', exclude: 'Исключать' },
-                        default: genre.hidden ? 'exclude' : 'allow' },
+                        default: fallback },
                     field: { name: genre.name },
                     onChange: function (value) {
                         if (value !== 'allow' && value !== 'include' && value !== 'exclude') return;
-                        Lampa.Storage.set(KEY + 'genre_' + genre.id, value);
-                        genresChanged();
+                        Lampa.Storage.set(KEY + prefix + genre.id, value);
+                        if (personal) personalChanged(); else genresChanged();
                     }
                 });
             })(GENRES[i]);
         }
+    }
+
+    function addGlobalGenreSettings(parent) {
+        var component = addNestedSection(parent, 'my_lampa_home_genres',
+            'genres', 'Жанры для стандартных подборок',
+            'Выбор и исключения жанров для стандартных рядов и их «Ещё»');
+        addGenreControls(component, false);
+    }
+
+    function addPersonalSettings(parent) {
+        var component = addNestedSection(parent, 'my_lampa_home_personal',
+            'personal_section', 'Моя подборка',
+            'Персональный первый ряд на главной и его фильтры');
+        var genreComponent = addNestedSection(component, 'my_lampa_home_personal_genres',
+            'personal_genres', 'Жанры',
+            'Отдельные жанровые правила только для «Моей подборки»');
+
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal', type: 'trigger', default: true },
+            field: { name: 'Показывать «Мою подборку»',
+                description: 'Первый ряд на главной странице Vlas' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_period', type: 'select',
+                values: { any: 'Любой период', '7': 'Последние 7 дней',
+                    '30': 'Последние 30 дней', '31_60': '31–60 дней назад',
+                    '61_180': '61–180 дней назад', '181_365': '181–365 дней назад',
+                    '3y': 'Последние 3 года', '5y': 'Последние 5 лет',
+                    '10y': 'Последние 10 лет' }, default: 'any' },
+            field: { name: 'Период релиза',
+                description: 'Ручные даты ниже имеют приоритет над этим быстрым периодом' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_period', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_date_from', type: 'input',
+                placeholder: 'YYYY-MM-DD', default: '' },
+            field: { name: 'Своя дата — от',
+                description: 'Можно указать только одну границу. Формат: YYYY-MM-DD' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_date_from', value || ''); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_date_to', type: 'input',
+                placeholder: 'YYYY-MM-DD', default: '' },
+            field: { name: 'Своя дата — до',
+                description: 'Если указана хотя бы одна корректная ручная дата, быстрый период не используется' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_date_to', value || ''); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_year_from', type: 'input',
+                placeholder: 'например 2020', default: '' },
+            field: { name: 'Год релиза — от',
+                description: 'Дополнительное условие, пересекается с периодом релиза' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_year_from', value || ''); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_year_to', type: 'input',
+                placeholder: 'например 2026', default: '' },
+            field: { name: 'Год релиза — до',
+                description: 'Оставьте пустым, если верхняя граница не нужна' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_year_to', value || ''); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_cub_min', type: 'select',
+                values: { '0': 'Без дополнительного ограничения',
+                    '5': '5.0+', '5.5': '5.5+', '6': '6.0+', '6.5': '6.5+',
+                    '7': '7.0+', '7.5': '7.5+', '8': '8.0+' }, default: '0' },
+            field: { name: 'Минимальная оценка CUB' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_cub_min', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_reactions_min', type: 'select',
+                values: { '15': '15+', '30': '30+', '50': '50+', '100': '100+',
+                    '250': '250+', '500': '500+' }, default: '15' },
+            field: { name: 'Минимум реакций CUB' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_reactions_min', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_hide_viewed', type: 'trigger', default: true },
+            field: { name: 'Скрывать просмотренное',
+                description: 'Отдельная настройка только для «Моей подборки»' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_hide_viewed', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_sort', type: 'select',
+                values: { match: 'Лучшее совпадение', popular: 'Популярность',
+                    cub: 'Оценка CUB', reactions: 'Количество реакций',
+                    new: 'Сначала новые' }, default: 'match' },
+            field: { name: 'Сортировка' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_sort', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_country', type: 'select',
+                values: PERSONAL_COUNTRIES, default: 'any' },
+            field: { name: 'Страна происхождения',
+                description: 'В первой версии можно выбрать одну страну' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_country', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_language', type: 'select',
+                values: PERSONAL_LANGUAGES, default: 'any' },
+            field: { name: 'Оригинальный язык',
+                description: 'Необязательный фильтр; по умолчанию любой язык' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'personal_language', value); personalChanged();
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'personal_reset', type: 'button' },
+            field: { name: 'Сбросить фильтры «Моей подборки»',
+                description: 'Возвращает широкую выдачу, не затрагивая стандартные подборки' },
+            onChange: function () {
+                Lampa.Storage.set(KEY + 'personal_period', 'any');
+                Lampa.Storage.set(KEY + 'personal_date_from', '');
+                Lampa.Storage.set(KEY + 'personal_date_to', '');
+                Lampa.Storage.set(KEY + 'personal_year_from', '');
+                Lampa.Storage.set(KEY + 'personal_year_to', '');
+                Lampa.Storage.set(KEY + 'personal_cub_min', '0');
+                Lampa.Storage.set(KEY + 'personal_reactions_min', '15');
+                Lampa.Storage.set(KEY + 'personal_hide_viewed', true);
+                Lampa.Storage.set(KEY + 'personal_sort', 'match');
+                Lampa.Storage.set(KEY + 'personal_country', 'any');
+                Lampa.Storage.set(KEY + 'personal_language', 'any');
+                setPersonalGenrePreset();
+                personalChanged();
+                if (Lampa.Settings && Lampa.Settings.update) Lampa.Settings.update();
+            }
+        });
+        addGenreControls(genreComponent, true);
+    }
+
+    function addRowsSettings(parent) {
+        var component = addNestedSection(parent, 'my_lampa_home_rows',
+            'rows_section', 'Стандартные подборки',
+            'Включение и выключение стандартных рядов Vlas');
+        for (var i = 0; i < COLLECTIONS.length; i++) {
+            (function (row) {
+                Lampa.SettingsApi.addParam({
+                    component: component,
+                    param: { name: KEY + row.id, type: 'trigger', default: true },
+                    field: { name: row.title,
+                        description: 'Оценка по реакциям Lampa; учитываются общие жанровые фильтры' },
+                    onChange: function (value) {
+                        Lampa.Storage.set(KEY + row.id, value);
+                        settingsChanged();
+                    }
+                });
+            })(COLLECTIONS[i]);
+        }
+    }
+
+    function addCommonSettings(parent) {
+        var component = addNestedSection(parent, 'my_lampa_home_common',
+            'common_section', 'Общие фильтры',
+            'Фильтры, которые применяются к стандартным подборкам');
+        addGlobalGenreSettings(component);
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'hide_viewed', type: 'trigger', default: true },
+            field: { name: 'Скрывать уже просмотренное',
+                description: 'Использует отметки просмотра самой Lampa' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'hide_viewed', value); settingsChanged();
+            }
+        });
+    }
+
+    function addFilmixSettings(parent) {
+        var component = addNestedSection(parent, 'my_lampa_home_filmix',
+            'filmix_section', 'Filmix',
+            'Кнопка просмотра, вход и настройки Filmix');
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'filmix_button', type: 'trigger', default: true },
+            field: { name: 'Кнопка Filmix на странице фильма',
+                description: 'Подключает Filmix после нажатия кнопки' },
+            onChange: function (value) {
+                Lampa.Storage.set(KEY + 'filmix_button', value);
+            }
+        });
+        Lampa.SettingsApi.addParam({
+            component: component,
+            param: { name: KEY + 'filmix_settings', type: 'button' },
+            field: { name: 'Filmix — вход и настройки',
+                description: 'Откройте «Добавить устройство на Filmix» и введите полученный код на https://filmix.my/consoles. Отдельная установка плагина не нужна.' },
+            onChange: openFilmixSettings
+        });
     }
 
     function addSettings() {
@@ -1218,44 +1658,10 @@
                 name: 'Настройки Vlas',
                 icon: '<svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg"><path d="M3 11L12 4l9 7v10H3z" fill="none" stroke="currentColor" stroke-width="2"/></svg>'
             });
-            addGenreSettings();
-            Lampa.SettingsApi.addParam({
-                component: 'my_lampa_home',
-                param: { name: KEY + 'hide_viewed', type: 'trigger', default: true },
-                field: { name: 'Скрывать уже просмотренное',
-                    description: 'Использует отметки просмотра самой Lampa' },
-                onChange: function (value) {
-                    Lampa.Storage.set(KEY + 'hide_viewed', value);
-                }
-            });
-            Lampa.SettingsApi.addParam({
-                component: 'my_lampa_home',
-                param: { name: KEY + 'filmix_button', type: 'trigger', default: true },
-                field: { name: 'Кнопка Filmix на странице фильма',
-                    description: 'Подключает Filmix после нажатия кнопки' },
-                onChange: function (value) {
-                    Lampa.Storage.set(KEY + 'filmix_button', value);
-                }
-            });
-            Lampa.SettingsApi.addParam({
-                component: 'my_lampa_home',
-                param: { name: KEY + 'filmix_settings', type: 'button' },
-                field: { name: 'Filmix — вход и настройки',
-                    description: 'Откройте «Добавить устройство на Filmix» и введите полученный код на https://filmix.my/consoles. Отдельная установка плагина не нужна.' },
-                onChange: openFilmixSettings
-            });
-            for (var i = 0; i < COLLECTIONS.length; i++) {
-                (function (row) {
-                    Lampa.SettingsApi.addParam({
-                        component: 'my_lampa_home',
-                        param: { name: KEY + row.id, type: 'trigger', default: true },
-                        field: { name: row.title, description: 'Оценка по реакциям Lampa; учитывается ваш выбор жанров' },
-                        onChange: function (value) {
-                            Lampa.Storage.set(KEY + row.id, value);
-                        }
-                    });
-                })(COLLECTIONS[i]);
-            }
+            addPersonalSettings('my_lampa_home');
+            addRowsSettings('my_lampa_home');
+            addCommonSettings('my_lampa_home');
+            addFilmixSettings('my_lampa_home');
         } catch (ignore) {
             // Older Lampa versions can still use the home rows without settings.
         }

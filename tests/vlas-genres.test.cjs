@@ -5,7 +5,7 @@ const vm = require('node:vm');
 
 const code = fs.readFileSync(path.join(__dirname, '..', 'vlas.js'), 'utf8');
 const KEY = 'my_lampa_home_';
-const rowIds = ['week', 'month', 'twomonth', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy',
+const rowIds = ['personal', 'week', 'month', 'twomonth', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy',
     'thriller', 'scifi', 'gems', 'classics'];
 const kinds = [[18], [35], [878], [27], [35, 27], [16], [99], [10770],
     [53], [9648], [35, 878], [], [18, 35]];
@@ -101,9 +101,17 @@ function checkSelected(cards) {
 
 (async () => {
     const user = app();
-    assert.equal(user.params.filter(p => p.param.type === 'select').length, 19);
+    const rootButtons = user.params.filter(p => p.component === 'my_lampa_home' &&
+        p.param.type === 'button').map(p => p.field.name);
+    assert.deepEqual(rootButtons, ['Моя подборка', 'Стандартные подборки', 'Общие фильтры', 'Filmix']);
+    user.change('common_section');
+    assert.equal(user.opened[0], 'my_lampa_home_common');
     user.change('genres');
-    assert.equal(user.opened[0], 'my_lampa_home_genres');
+    assert.equal(user.opened[1], 'my_lampa_home_genres');
+    assert.equal(user.params.filter(p => p.param.name.indexOf(KEY + 'genre_') === 0 &&
+        p.param.type === 'select').length, 19);
+    assert.equal(user.params.filter(p => p.param.name.indexOf(KEY + 'personal_genre_') === 0 &&
+        p.param.type === 'select').length, 19);
     const [legacy] = await user.main();
     assert.equal(legacy.results.length, 24);
     assert.ok(legacy.results.every(c => !c.genre_ids.some(id => [16, 27, 99, 10770].includes(id))));
@@ -164,7 +172,8 @@ function checkSelected(cards) {
     assert.ok(mysteryRow.results.every(c => c.genre_ids.includes(9648) && !c.genre_ids.includes(53)));
     assert.ok(mystery.requests[0].url.includes('with_genres=9648'));
 
-    for (const setting of user.params.filter(p => p.param.type === 'select'))
+    for (const setting of user.params.filter(p =>
+        p.param.name.indexOf(KEY + 'genre_') === 0 && p.param.type === 'select'))
         setting.onChange('exclude');
     assert.equal((await user.main()).length, 0);
     assert.equal(user.nativeCalls, 0, 'All excluded fell back to unrestricted main');
@@ -207,5 +216,17 @@ function checkSelected(cards) {
     const saved = history.get(KEY + 'rotation_comedy');
     assert.equal(saved.genres, '878|16,99,27,10770');
     assert.equal(saved.previous.length, 0);
-    console.log('Genre settings: defaults, OR selection, exclusion priority, themes, More, races, feeds and isolation: OK');
+
+    const settingsUser = app();
+    settingsUser.storage.set(KEY + 'week', false);
+    settingsUser.storage.set(KEY + 'genre_27', 'include');
+    settingsUser.storage.set(KEY + 'personal_period', '30');
+    settingsUser.storage.set(KEY + 'personal_genre_35', 'include');
+    settingsUser.change('personal_reset');
+    assert.equal(settingsUser.storage.get(KEY + 'personal_period'), 'any');
+    assert.equal(settingsUser.storage.get(KEY + 'personal_genre_35'), 'allow');
+    assert.equal(settingsUser.storage.get(KEY + 'week'), false);
+    assert.equal(settingsUser.storage.get(KEY + 'genre_27'), 'include');
+
+    console.log('Genre settings: defaults, nested sections, personal isolation, themes, More, races and feeds: OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });
