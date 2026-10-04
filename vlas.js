@@ -1387,15 +1387,17 @@
 
     function addGenreControls(component, personal) {
         var prefix = personal ? 'personal_genre_' : 'genre_';
+        var helpName = personal ? 'personal_genres_help' : 'genres_help';
+        var allName = personal ? 'personal_genres_all' : 'genres_all';
         Lampa.SettingsApi.addParam({
             component: component,
-            param: { name: KEY + prefix + 'help', type: 'static' },
+            param: { name: KEY + helpName, type: 'static' },
             field: { name: 'Как работает выбор',
                 description: '«Выбирать» — хотя бы один выбранный жанр. «Исключать» — фильм скрывается целиком. «Разрешать» — жанр не влияет на отбор.' }
         });
         Lampa.SettingsApi.addParam({
             component: component,
-            param: { name: KEY + prefix + 'all', type: 'button' },
+            param: { name: KEY + allName, type: 'button' },
             field: { name: 'Разрешить все жанры' },
             onChange: personal ? setPersonalGenrePreset : function () { setGenrePreset(false); }
         });
