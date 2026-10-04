@@ -3,6 +3,7 @@ const {app, movie} = require('./selection-harness.cjs');
 const ids = row => Array.from(row.results, c => c.id);
 const movies = (start, n, date) => Array.from({length:n}, (_,i)=>movie(start+i,date));
 (async () => {
+    const now = '2026-09-28T12:00:00Z';
     // Month is a strict rolling 30-day release window in both the row and More.
     {
         const now = '2026-09-28T12:00:00Z';
