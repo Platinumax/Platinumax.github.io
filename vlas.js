@@ -207,6 +207,10 @@
 
     // TMDB queries supply candidates; reactions determine whether they qualify.
     var COLLECTIONS = [
+        { id: 'goodfresh', title: 'Добротный свежак',
+          fallbackTitle: 'Добротный свежак', feed: 'weekly',
+          releaseDays: 60, preferYear: true, moreYears: 2, feedKeepsFilters: true,
+          query: 'trending/movie/week' },
         { id: 'week', title: 'Самые популярные за неделю',
           fallbackTitle: 'В тренде на этой неделе', feed: 'weekly',
           preferYear: true, moreYears: 2, feedKeepsFilters: true,
@@ -411,7 +415,7 @@
         var upper = cutoff, lower = '';
         var boundary;
         var url = 'discover/movie?' + config.query;
-        if (config.id === 'week') return config.query;
+        if (config.id === 'week' || config.id === 'goodfresh') return config.query;
         var genres = rowGenres(config, filter);
         // The row theme is also checked locally, alongside the user's OR selection.
         if (!genres.length) genres = filter.include;
