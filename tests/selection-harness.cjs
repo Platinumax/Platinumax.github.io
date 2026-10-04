@@ -59,7 +59,7 @@ function app(options = {}) {
         Storage: {get(key, fallback) {
             if (storage.has(key)) return storage.get(key);
             if (options.enabled && key.startsWith('my_lampa_home_') && !key.includes('genre_') && !key.endsWith('hide_viewed') && !key.endsWith('reaction_cache')) return options.enabled.includes(key.slice('my_lampa_home_'.length));
-            if (options.onlyPeriod && ['week', 'month', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy', 'thriller', 'scifi', 'gems', 'classics'].some(id => key === 'my_lampa_home_' + id)) return key === 'my_lampa_home_' + options.onlyPeriod;
+            if (options.onlyPeriod && ['week', 'month', 'twomonth', 'halfyear', 'year', 'topcurrent', 'topprevious', 'fresh', 'best', 'comedy', 'thriller', 'scifi', 'gems', 'classics'].some(id => key === 'my_lampa_home_' + id)) return key === 'my_lampa_home_' + options.onlyPeriod;
             if (key === 'my_lampa_home_week') return !options.onlyMonth;
             if (key === 'my_lampa_home_month') return true;
             if (key === 'my_lampa_home_genre_35' && options.comedy) return 'include';

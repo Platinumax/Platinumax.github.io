@@ -41,7 +41,7 @@
     var ROW_PAGES = 12;
     var MORE_LIMIT = 100;
     var ROTATION_WINDOWS = 6;
-    var EXCLUSIVE_ROWS = ['week', 'month', 'halfyear', 'year'];
+    var EXCLUSIVE_ROWS = ['week', 'month', 'twomonth', 'halfyear', 'year'];
     var rowSessions = {};
 
     function loadSaved() {
@@ -216,13 +216,17 @@
           fallbackTitle: 'Популярные фильмы', feed: 'monthly',
           releaseDays: 30, preferYear: true, moreYears: 2, feedKeepsFilters: true, excludeRows: ['week'],
           query: 'sort_by=popularity.desc' },
+        { id: 'twomonth', title: 'Самые популярные за 2 месяца',
+          fallbackTitle: 'Популярные фильмы 31–60 дней назад', feed: 'monthly',
+          releaseDays: 60, olderThanDays: 31, preferYear: true, moreYears: 2, feedKeepsFilters: true, excludeRows: ['week', 'month'],
+          query: 'sort_by=popularity.desc' },
         { id: 'halfyear', title: 'Самые популярные за полгода',
           fallbackTitle: 'Популярные фильмы последних 180 дней', feed: 'yearly',
-          releaseDays: 180, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month'],
+          releaseDays: 180, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month', 'twomonth'],
           query: 'sort_by=popularity.desc' },
         { id: 'year', title: 'Самые популярные за предыдущее полугодие',
           fallbackTitle: 'Популярные фильмы 181–365 дней назад', feed: 'yearly',
-          releaseDays: 365, olderThanDays: 181, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month', 'halfyear'],
+          releaseDays: 365, olderThanDays: 181, preferYear: true, feedKeepsFilters: true, excludeRows: ['week', 'month', 'twomonth', 'halfyear'],
           query: 'sort_by=popularity.desc' },
         { id: 'topcurrent', title: 'Топ — текущий год',
           feed: 'yearly', currentYear: true, feedKeepsFilters: true, maxItems: MORE_LIMIT,
