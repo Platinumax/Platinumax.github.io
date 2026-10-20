@@ -69,11 +69,18 @@ def trakt(period, limit=200):
 
 def movie_details(tmdb_id):
     url = "https://api.themoviedb.org/3/movie/{}?language=ru-RU".format(tmdb_id)
-    movie = get_json(url, {
-        "Authorization": "Bearer " + TMDB_TOKEN,
-        "accept": "application/json",
-        "User-Agent": "VlasLampaHome/3.0",
-    })
+    try:
+        movie = get_json(url, {
+            "Authorization": "Bearer " + TMDB_TOKEN,
+            "accept": "application/json",
+            "User-Agent": "VlasLampaHome/3.0",
+        })
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+        # Trakt may retain an ID whose TMDB movie no longer exists.
+        print("TMDB movie {} not found; skipping candidate".format(tmdb_id), flush=True)
+        return None
     return {
         "id": movie["id"], "title": movie.get("title"),
         "original_title": movie.get("original_title"),
@@ -155,7 +162,7 @@ def main():
     sources["yearly"] = "trakt_yearly" if raw["yearly"] else "tmdb_fallback"
 
     ids = {tmdb_id for movies in raw.values() for tmdb_id, _ in movies}
-    # A failed TMDB response must not publish a partial ranking.
+    # Missing movies are skipped; all other metadata errors still fail the build.
     with ThreadPoolExecutor(max_workers=4) as pool:
         details = dict(zip(ids, pool.map(movie_details, ids)))
 
@@ -164,7 +171,7 @@ def main():
         row = []
         for tmdb_id, watchers in movies:
             item = details[tmdb_id]
-            if not valid(item):
+            if item is None or not valid(item):
                 continue
             card = dict(item)
             card["trakt_watchers"] = watchers
@@ -176,7 +183,9 @@ def main():
               "generated_at_epoch": int(now.timestamp()),
               "sources": ["Trakt popularity", "TMDB metadata", "CUB reactions in Lampa"],
               "row_sources": sources, "release_policy": "client",
-              "trakt_errors": errors, "rows": rows}
+              "trakt_errors": errors,
+              "tmdb_missing_ids": sorted(i for i, movie in details.items() if movie is None),
+              "rows": rows}
     HISTORY.write_text(json.dumps(history, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     FEED.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
     print("Trakt availability:", errors or "all requested periods available")
