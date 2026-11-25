@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deploy_1.outputs.page_url || steps.deploy_2.outputs.page_url || steps.deploy_3.outputs.page_url || steps.deploy_4.outputs.page_url || steps.deploy_5.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -87,5 +87,38 @@ jobs:
           done
           echo '::error::Pages artifact not visible after 60 seconds'
           exit 1
-      - uses: actions/deploy-pages@v4
-        id: deployment
+      - name: Deploy Pages (attempt 1/5)
+        uses: actions/deploy-pages@v4
+        id: deploy_1
+        continue-on-error: true
+      - name: Wait 2 minutes before deployment retry
+        if: ${{ !cancelled() && steps.deploy_1.outcome == 'failure' }}
+        run: sleep 120
+      - name: Deploy Pages (attempt 2/5)
+        uses: actions/deploy-pages@v4
+        id: deploy_2
+        if: ${{ !cancelled() && steps.deploy_1.outcome == 'failure' }}
+        continue-on-error: true
+      - name: Wait 5 minutes before deployment retry
+        if: ${{ !cancelled() && steps.deploy_2.outcome == 'failure' }}
+        run: sleep 300
+      - name: Deploy Pages (attempt 3/5)
+        uses: actions/deploy-pages@v4
+        id: deploy_3
+        if: ${{ !cancelled() && steps.deploy_2.outcome == 'failure' }}
+        continue-on-error: true
+      - name: Wait 10 minutes before deployment retry
+        if: ${{ !cancelled() && steps.deploy_3.outcome == 'failure' }}
+        run: sleep 600
+      - name: Deploy Pages (attempt 4/5)
+        uses: actions/deploy-pages@v4
+        id: deploy_4
+        if: ${{ !cancelled() && steps.deploy_3.outcome == 'failure' }}
+        continue-on-error: true
+      - name: Wait 15 minutes before deployment retry
+        if: ${{ !cancelled() && steps.deploy_4.outcome == 'failure' }}
+        run: sleep 900
+      - name: Deploy Pages (attempt 5/5)
+        uses: actions/deploy-pages@v4
+        id: deploy_5
+        if: ${{ !cancelled() && steps.deploy_4.outcome == 'failure' }}
